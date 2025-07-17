@@ -17,35 +17,42 @@ public class MainMenuState implements MenuState {
 
     public MainMenuState() {
         this.keyboard = InlineKeyboardMarkup.builder()
-                .keyboard(List.of(
-                        List.of(
-                                InlineKeyboardButton.builder()
-                                        .text("🤖 AI-торговля")
-                                        .callbackData("ai_trading")
-                                        .build(),
-                                InlineKeyboardButton.builder()
-                                        .text("✋ Ручная торговля")
-                                        .callbackData("manual_trading_settings")
-                                        .build()
-                        ),
-                        List.of(
-                                InlineKeyboardButton.builder()
-                                        .text("ℹ️ О боте")
-                                        .callbackData("about")
-                                        .build(),
-                                InlineKeyboardButton.builder()
-                                        .text("📝 Регистрация")
-                                        .callbackData("register")
-                                        .build()
-                        ),
-                        List.of(
-                                InlineKeyboardButton.builder()
-                                        .text("💳 Тарифы")
-                                        .callbackData("plans")
-                                        .build()
-                        )
-                ))
-                .build();
+            .keyboard(List.of(
+                // строка 1: AI-торговля, Выбор биржи, Ручная торговля
+                List.of(
+                    InlineKeyboardButton.builder()
+                        .text("🤖 AI-торговля")
+                        .callbackData("ai_trading")
+                        .build(),
+                    InlineKeyboardButton.builder()
+                        .text("🏦 Выбор биржи")
+                        .callbackData("exchange_select")
+                        .build(),
+                    InlineKeyboardButton.builder()
+                        .text("✋ Ручная торговля")
+                        .callbackData("manual_trading_settings")
+                        .build()
+                ),
+                // строка 2: О боте, Регистрация
+                List.of(
+                    InlineKeyboardButton.builder()
+                        .text("ℹ️ О боте")
+                        .callbackData("about")
+                        .build(),
+                    InlineKeyboardButton.builder()
+                        .text("📝 Регистрация")
+                        .callbackData("register")
+                        .build()
+                ),
+                // строка 3: Тарифы
+                List.of(
+                    InlineKeyboardButton.builder()
+                        .text("💳 Тарифы")
+                        .callbackData("plans")
+                        .build()
+                )
+            ))
+            .build();
     }
 
     @Override
@@ -56,11 +63,11 @@ public class MainMenuState implements MenuState {
     @Override
     public SendMessage render(Long chatId) {
         return SendMessage.builder()
-                .chatId(chatId.toString())
-                .text("*🏠 Главное меню*\nВыберите один из разделов ниже:")
-                .parseMode("Markdown")
-                .replyMarkup(keyboard)
-                .build();
+            .chatId(chatId.toString())
+            .text("*🏠 Главное меню*\nВыберите один из разделов ниже:")
+            .parseMode("Markdown")
+            .replyMarkup(keyboard)
+            .build();
     }
 
     @Override
@@ -68,12 +75,13 @@ public class MainMenuState implements MenuState {
         if (update.hasCallbackQuery()) {
             String data = update.getCallbackQuery().getData();
             return switch (data) {
-                case "ai_trading" -> "ai_trading";
-                case "manual_trading_settings" -> "manual_trading_settings";
-                case "about" -> "about";
-                case "register" -> "register";
-                case "plans" -> "plans";
-                default -> name();
+                case "ai_trading"               -> "ai_trading";
+                case "exchange_select"          -> "exchange_select";
+                case "manual_trading_settings"  -> "manual_trading_settings";
+                case "about"                    -> "about";
+                case "register"                 -> "register";
+                case "plans"                    -> "plans";
+                default                         -> name();
             };
         }
         return name();

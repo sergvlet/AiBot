@@ -1,4 +1,4 @@
-package com.chicu.aibot.bot.menu.feature.ai;
+package com.chicu.aibot.bot.menu.state;
 
 import com.chicu.aibot.bot.menu.core.MenuService;
 import com.chicu.aibot.bot.menu.core.MenuState;
