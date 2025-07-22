@@ -2,6 +2,7 @@ package com.chicu.aibot.bot.menu.feature.exchange;
 
 import com.chicu.aibot.bot.menu.core.MenuService;
 import com.chicu.aibot.bot.menu.core.MenuState;
+import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.exchange.model.ExchangeSettings;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
 import lombok.RequiredArgsConstructor;
@@ -15,26 +16,36 @@ import java.util.List;
 
 @Component
 @RequiredArgsConstructor
-public class ExchangeSelectState implements MenuState {
-    public static final String NAME = "exchange_select";
+public class ExchangeStatusState implements MenuState {
+    public static final String NAME = "exchange_status";
     private final ExchangeSettingsService exchangeService;
+    private final MenuSessionService session;
 
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public SendMessage render(Long chatId) {
-        // Получаем текущие настройки (если ещё не было — создастся с дефолтами)
-        ExchangeSettings settings = exchangeService.getOrCreate(chatId);
-        String current = settings.getExchange().name();
+        ExchangeSettings s = exchangeService.getOrCreate(chatId);
+        boolean hasKeys = exchangeService.hasApiKeys(chatId);
+        boolean connected = hasKeys && exchangeService.testConnection(chatId);
 
-        var rows = List.of(
+        String text = String.format(
+            "*%s* (%s)\n\n" +
+            "API ключи: %s\n" +
+            "Соединение: %s",
+            s.getExchange(),
+            s.getNetwork(),
+            hasKeys ? "🔑 Сохранены" : "❌ Нет ключей",
+            connected ? "✅ OK" : "❌ Не подключён"
+        );
+
+        var rows = List.<List<InlineKeyboardButton>>of(
             List.of(
-                InlineKeyboardButton.builder().text("🏦 Binance").callbackData("exchange:BINANCE").build(),
-                InlineKeyboardButton.builder().text("🏦 Bybit").callbackData("exchange:BYBIT").build(),
-                InlineKeyboardButton.builder().text("🏦 Coinbase").callbackData("exchange:COINBASE").build()
+                InlineKeyboardButton.builder()
+                    .text(hasKeys ? "✏️ Изменить ключи" : "🔑 Ввести ключи")
+                    .callbackData("exchange_api_input_public")
+                    .build()
             ),
             List.of(
                 InlineKeyboardButton.builder().text("‹ Назад").callbackData(MenuService.MAIN_MENU).build()
@@ -43,12 +54,8 @@ public class ExchangeSelectState implements MenuState {
 
         return SendMessage.builder()
             .chatId(chatId.toString())
-            .text(
-                "*Выбор биржи*\n\n" +
-                "Текущая биржа: `" + current + "`\n\n" +
-                "Пожалуйста, выберите биржу:"
-            )
             .parseMode("Markdown")
+            .text(text)
             .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
             .build();
     }
@@ -57,13 +64,10 @@ public class ExchangeSelectState implements MenuState {
     public String handleInput(Update update) {
         var cq = update.getCallbackQuery();
         if (cq == null) return NAME;
-        Long chatId = cq.getMessage().getChatId();
         String data = cq.getData();
-
-        if (data.startsWith("exchange:")) {
-            String code = data.substring("exchange:".length());
-            exchangeService.updateExchange(chatId, code);
-            return ExchangeNetworkSelectState.NAME;
+        if ("exchange_api_input_public".equals(data)) {
+            session.setNextValue(cq.getMessage().getChatId(), "EXCHANGE_PUBLIC_KEY");
+            return ExchangeApiKeyInputPublicState.NAME;
         }
         if (MenuService.MAIN_MENU.equals(data)) {
             return MenuService.MAIN_MENU;

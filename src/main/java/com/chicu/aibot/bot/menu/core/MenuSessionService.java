@@ -7,65 +7,68 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Хранит для каждого chatId:
- * 1) messageId отправленного меню, чтобы при callback’е редактировать одно и то же сообщение
- * 2) ключ текущего состояния (state), чтобы MenuService мог переключаться между состояниями
- * 3) ключ текущего редактируемого поля (editingField) для «универсального» редактора параметров
+ * 1) messageId отправленного меню
+ * 2) текущее состояние
+ * 3) текущее редактируемое поле
+ * 4) ключ следующего текстового значения (nextValueKey)
  */
 @Component
 public class MenuSessionService {
 
-    // messageId текущего меню для данного chatId
-    private final Map<Long, Integer> menuMessages = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> menuMessages   = new ConcurrentHashMap<>();
+    private final Map<Long, String>  currentStates  = new ConcurrentHashMap<>();
+    private final Map<Long, String>  editingFields  = new ConcurrentHashMap<>();
+    // ВСЁ, что нужно для «ожидания» текстового ввода
+    private final Map<Long, String>  nextValueKeys  = new ConcurrentHashMap<>();
 
-    // текущее состояние (state) для данного chatId
-    private final Map<Long, String> currentStates = new ConcurrentHashMap<>();
-
-    // текущее редактируемое поле (например, "gridSizePct") для данного chatId
-    private final Map<Long, String> editingFields = new ConcurrentHashMap<>();
-
-    // --- messageId API ---
+    // --- menuMessageId ---
     public Integer getMenuMessageId(Long chatId) {
         return menuMessages.get(chatId);
     }
-
     public void setMenuMessageId(Long chatId, Integer messageId) {
         menuMessages.put(chatId, messageId);
     }
 
-    // --- state API ---
-    /**
-     * Возвращает последний сохранённый state для chatId или null, если его нет.
-     */
+    // --- state ---
     public String getCurrentState(Long chatId) {
         return currentStates.get(chatId);
     }
-
-    /**
-     * Сохраняет новое state для chatId.
-     */
     public void setCurrentState(Long chatId, String state) {
         currentStates.put(chatId, state);
     }
 
-    // --- editingField API ---
-    /**
-     * Сохраняет, какое именно поле сейчас редактируется для данного chatId.
-     */
-    public void setEditingField(Long chatId, String fieldKey) {
-        editingFields.put(chatId, fieldKey);
-    }
-
-    /**
-     * Возвращает ключ поля, которое сейчас редактируется, или null, если никакое.
-     */
+    // --- editingField ---
     public String getEditingField(Long chatId) {
         return editingFields.get(chatId);
     }
-
-    /**
-     * Сбрасывает текущее редактируемое поле.
-     */
+    public void setEditingField(Long chatId, String fieldKey) {
+        editingFields.put(chatId, fieldKey);
+    }
     public void clearEditingField(Long chatId) {
         editingFields.remove(chatId);
     }
+
+    // --- nextValue ---
+    /**
+     * Устанавливает, какое конкретно текстовое значение бот сейчас ждёт.
+     * Например: "EXCHANGE_PUBLIC_KEY" или "EXCHANGE_SECRET_KEY".
+     */
+    public void setNextValue(Long chatId, String nextValueKey) {
+        nextValueKeys.put(chatId, nextValueKey);
+    }
+
+    /**
+     * Возвращает ключ ожидаемого текстового значения, или null, если ввода нет.
+     */
+    public String getNextValue(Long chatId) {
+        return nextValueKeys.get(chatId);
+    }
+
+    /**
+     * Сбрасывает ожидание текстового ввода.
+     */
+    public void clearNextValue(Long chatId) {
+        nextValueKeys.remove(chatId);
+    }
+
 }

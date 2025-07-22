@@ -1,6 +1,5 @@
 package com.chicu.aibot.bot.menu.feature.manual;
 
-import com.chicu.aibot.bot.menu.core.MenuService;
 import com.chicu.aibot.bot.menu.core.MenuState;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

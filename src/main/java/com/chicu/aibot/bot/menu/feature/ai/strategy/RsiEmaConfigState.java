@@ -2,7 +2,6 @@
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
-import lombok.NonNull;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
@@ -48,7 +47,7 @@ public class RsiEmaConfigState implements MenuState {
     }
 
     @Override
-    public @NonNull String handleInput(Update update) {
+    public String handleInput(Update update) {
         if (update.hasCallbackQuery()
             && "ai_select_strategy".equals(update.getCallbackQuery().getData())) {
             return AiSelectStrategyState.NAME;

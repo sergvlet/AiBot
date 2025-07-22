@@ -5,23 +5,22 @@ import com.chicu.aibot.exchange.enums.NetworkType;
 import jakarta.persistence.*;
 import lombok.*;
 
-@Entity
-@Table(name = "exchange_settings")
+import java.io.Serializable;
+
+@Embeddable
 @Data
-@Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ExchangeSettings {
-
-    @Id
+@Builder
+public class ExchangeApiKeyId implements Serializable {
     @Column(name = "chat_id")
     private Long chatId;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "exchange")
     private Exchange exchange;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "network")
     private NetworkType network;
 }

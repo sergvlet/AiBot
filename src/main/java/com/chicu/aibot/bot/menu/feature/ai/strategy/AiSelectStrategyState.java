@@ -1,10 +1,9 @@
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.bot.strategy.StrategyType;
-import com.chicu.aibot.bot.strategy.model.AiTradingSettings;
-import com.chicu.aibot.bot.strategy.service.AiTradingSettingsService;
-import lombok.NonNull;
+import com.chicu.aibot.strategy.StrategyType;
+import com.chicu.aibot.strategy.model.AiTradingSettings;
+import com.chicu.aibot.strategy.service.AiTradingSettingsService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -59,7 +58,7 @@ public class AiSelectStrategyState implements MenuState {
     }
 
     @Override
-    public @NonNull String handleInput(Update update) {
+    public String handleInput(Update update) {
         if (!update.hasCallbackQuery()) {
             return NAME;
         }

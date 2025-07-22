@@ -2,7 +2,6 @@ package com.chicu.aibot.bot.menu.feature.register;
 
 import com.chicu.aibot.bot.menu.core.MenuService;
 import com.chicu.aibot.bot.menu.core.MenuState;
-import lombok.NonNull;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
@@ -41,7 +40,7 @@ public class RegisterState implements MenuState {
     }
 
     @Override
-    public @NonNull String handleInput(Update update) {
+    public String handleInput(Update update) {
         if (update.hasCallbackQuery()) {
             String data = update.getCallbackQuery().getData();
             if (MenuService.MAIN_MENU.equals(data)) {

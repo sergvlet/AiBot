@@ -2,9 +2,8 @@ package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.bot.strategy.fibonacci.model.FibonacciGridStrategySettings;
-import com.chicu.aibot.bot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
-import lombok.NonNull;
+import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
+import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -79,7 +78,7 @@ public class FibonacciGridConfigState implements MenuState {
     }
 
     @Override
-    public @NonNull String handleInput(Update update) {
+    public String handleInput(Update update) {
         if (!update.hasCallbackQuery()) {
             return NAME;
         }
