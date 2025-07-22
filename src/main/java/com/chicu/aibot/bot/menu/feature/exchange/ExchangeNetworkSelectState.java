@@ -19,68 +19,41 @@ public class ExchangeNetworkSelectState implements MenuState {
     private final ExchangeSettingsService exchangeService;
 
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public SendMessage render(Long chatId) {
-        // берём текущую настройку
-        ExchangeSettings settings = exchangeService.getOrCreate(chatId);
-        String currentNetwork = settings.getNetwork().name();
-
+        ExchangeSettings s = exchangeService.getOrCreate(chatId);
         var rows = List.of(
-                List.of(
-                        InlineKeyboardButton.builder()
-                                .text("🔗 Mainnet")
-                                .callbackData("network:MAINNET")
-                                .build(),
-                        InlineKeyboardButton.builder()
-                                .text("🔗 Testnet")
-                                .callbackData("network:TESTNET")
-                                .build()
-                ),
-                List.of(
-                        InlineKeyboardButton.builder()
-                                .text("‹ Назад")
-                                .callbackData(ExchangeSelectState.NAME)  // возвращаемся к выбору биржи
-                                .build()
-                )
+            List.of(
+                InlineKeyboardButton.builder().text("🔗 Mainnet").callbackData("network:MAINNET").build(),
+                InlineKeyboardButton.builder().text("🔗 Testnet").callbackData("network:TESTNET").build()
+            ),
+            List.of(
+                InlineKeyboardButton.builder().text("‹ Назад").callbackData(ExchangeSelectState.NAME).build()
+            )
         );
-
         return SendMessage.builder()
-                .chatId(chatId.toString())
-                .parseMode("Markdown")
-                .text(
-                        "*Выбор сети*\n\n" +
-                                "Текущая сеть: `" + currentNetwork + "`\n\n" +
-                                "Пожалуйста, выберите сеть:"
-                )
-                .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
-                .build();
+            .chatId(chatId.toString())
+            .text(String.format("*Выбор сети*\nТекущая: `%s`\n\nВыберите:", s.getNetwork()))
+            .parseMode("Markdown")
+            .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
+            .build();
     }
 
     @Override
     public String handleInput(Update update) {
         var cq = update.getCallbackQuery();
-        if (cq == null) {
-            return NAME;
-        }
-
-        String data = cq.getData();
-        Long chatId = cq.getMessage().getChatId();
-
+        if (cq == null) return NAME;
+        var chatId = cq.getMessage().getChatId();
+        var data = cq.getData();
         if (data.startsWith("network:")) {
-            String net = data.substring("network:".length());
-            exchangeService.updateNetwork(chatId, net);
+            exchangeService.updateNetwork(chatId, data.substring(8));
             return ExchangeStatusState.NAME;
         }
-
-        // кнопка «‹ Назад» возвращает в выбор биржи
         if (ExchangeSelectState.NAME.equals(data)) {
             return ExchangeSelectState.NAME;
         }
-
         return NAME;
     }
 }

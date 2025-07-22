@@ -20,16 +20,11 @@ public class ExchangeSelectState implements MenuState {
     private final ExchangeSettingsService exchangeService;
 
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public SendMessage render(Long chatId) {
-        // Получаем текущие настройки (если ещё не было — создастся с дефолтами)
-        ExchangeSettings settings = exchangeService.getOrCreate(chatId);
-        String current = settings.getExchange().name();
-
+        ExchangeSettings s = exchangeService.getOrCreate(chatId);
         var rows = List.of(
             List.of(
                 InlineKeyboardButton.builder().text("🏦 Binance").callbackData("exchange:BINANCE").build(),
@@ -40,14 +35,9 @@ public class ExchangeSelectState implements MenuState {
                 InlineKeyboardButton.builder().text("‹ Назад").callbackData(MenuService.MAIN_MENU).build()
             )
         );
-
         return SendMessage.builder()
             .chatId(chatId.toString())
-            .text(
-                "*Выбор биржи*\n\n" +
-                "Текущая биржа: `" + current + "`\n\n" +
-                "Пожалуйста, выберите биржу:"
-            )
+            .text(String.format("*Выбор биржи*\nТекущая: `%s`\n\nВыберите:", s.getExchange()))
             .parseMode("Markdown")
             .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
             .build();
@@ -57,12 +47,10 @@ public class ExchangeSelectState implements MenuState {
     public String handleInput(Update update) {
         var cq = update.getCallbackQuery();
         if (cq == null) return NAME;
-        Long chatId = cq.getMessage().getChatId();
-        String data = cq.getData();
-
+        var chatId = cq.getMessage().getChatId();
+        var data = cq.getData();
         if (data.startsWith("exchange:")) {
-            String code = data.substring("exchange:".length());
-            exchangeService.updateExchange(chatId, code);
+            exchangeService.updateExchange(chatId, data.substring(9));
             return ExchangeNetworkSelectState.NAME;
         }
         if (MenuService.MAIN_MENU.equals(data)) {

@@ -8,9 +8,9 @@ import lombok.*;
 @Entity
 @Table(name = "exchange_settings")
 @Data
-@Builder
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class ExchangeSettings {
 
     @Id
@@ -18,10 +18,10 @@ public class ExchangeSettings {
     private Long chatId;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "exchange", nullable = false)
     private Exchange exchange;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "network", nullable = false)
     private NetworkType network;
 }
