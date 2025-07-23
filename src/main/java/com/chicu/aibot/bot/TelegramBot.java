@@ -19,7 +19,7 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@SuppressWarnings("deprecation") // для getBotToken() и устаревшего конструктора суперкласса
+@SuppressWarnings("deprecation") // для getBotToken() и устаревшего конструктора супер класса
 public class TelegramBot extends TelegramLongPollingBot {
 
     private final TelegramBotProperties props;

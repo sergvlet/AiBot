@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/exchange/repository/ExchangeApiKeyRepository.java
 package com.chicu.aibot.exchange.repository;
 
 import com.chicu.aibot.exchange.model.ExchangeApiKey;

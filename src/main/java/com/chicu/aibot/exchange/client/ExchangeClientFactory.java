@@ -11,8 +11,8 @@ import java.util.Map;
 public class ExchangeClientFactory {
 
     /**
-     * Spring внедрит все бины ExchangeClient,
-     * ключ — имя бина (мы выставили @Component("BINANCE"), @Component("BYBIT")).
+     * Spring внедрит все бинт ExchangeClient,
+     * ключ — имя бена (мы выставили @Component("BINANCE"), @Component("BYBIT")).
      */
     private final Map<String, ExchangeClient> clients;
 

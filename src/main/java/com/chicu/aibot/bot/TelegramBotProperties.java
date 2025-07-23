@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/TelegramBotProperties.java
 package com.chicu.aibot.bot;
 
 import lombok.Data;
@@ -18,7 +17,7 @@ public class TelegramBotProperties {
      */
     private String username;
     /**
-     * токен, полученный от BotFather
+     * Токен, полученный от BotFather
      */
     private String token;
 }

@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/exchange/service/impl/ExchangeSettingsServiceImpl.java
 package com.chicu.aibot.exchange.service.impl;
 
 import com.chicu.aibot.exchange.client.ExchangeClient;
@@ -19,7 +18,7 @@ public class ExchangeSettingsServiceImpl implements ExchangeSettingsService {
 
     private final ExchangeSettingsRepository settingsRepo;
     private final ExchangeApiKeyRepository    apiKeyRepo;
-    private final Map<String, ExchangeClient> clients; // бинды @Component("BINANCE"), @Component("BYBIT")...
+    private final Map<String, ExchangeClient> clients; // бины @Component("BINANCE"), @Component("BYBIT")...
 
     @Override
     @Transactional(readOnly = true)

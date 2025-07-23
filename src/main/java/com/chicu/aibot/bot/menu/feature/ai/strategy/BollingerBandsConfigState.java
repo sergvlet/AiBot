@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/menu/feature/ai/strategy/BollingerBandsConfigState.java
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
@@ -21,11 +20,15 @@ public class BollingerBandsConfigState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        String text = "*Bollinger Bands Strategy*\n\n"
-            + "Использует полосы Боллинджера для определения волатильности и потенциальных разворотов.\n\n"
-            + "*Дефолтные настройки:*\n"
-            + "- Период SMA: 20\n"
-            + "- Коэффициент отклонения: 2\n";
+        String text = """
+                *Bollinger Bands Strategy*
+                
+                Использует полосы Боллинджера для определения волатильности и потенциальных разворотов.
+                
+                *Дефолтные настройки:*
+                - Период SMA: 20
+                - Коэффициент отклонения: 2
+                """;
 
         InlineKeyboardButton back = InlineKeyboardButton.builder()
             .text("‹ Назад")

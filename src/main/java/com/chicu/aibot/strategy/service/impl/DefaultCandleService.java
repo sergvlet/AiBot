@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/strategy/service/impl/DefaultCandleService.java
 package com.chicu.aibot.strategy.service.impl;
 
 import com.chicu.aibot.strategy.model.Candle;

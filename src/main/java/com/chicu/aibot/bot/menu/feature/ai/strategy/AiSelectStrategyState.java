@@ -50,8 +50,10 @@ public class AiSelectStrategyState implements MenuState {
 
         return SendMessage.builder()
             .chatId(chatId.toString())
-            .text("*Выбор стратегий AI*\n\n" +
-                  "✅ — включено. Нажмите, чтобы переключить или сразу перейти к настройке:")
+            .text("""
+                    *Выбор стратегий AI*
+                    
+                    ✅ — включено. Нажмите, чтобы переключить или сразу перейти к настройке:""")
             .parseMode("Markdown")
             .replyMarkup(new InlineKeyboardMarkup(rows))
             .build();

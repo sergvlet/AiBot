@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/strategy/StrategySettings.java
 package com.chicu.aibot.strategy;
 
 import jakarta.persistence.Id;

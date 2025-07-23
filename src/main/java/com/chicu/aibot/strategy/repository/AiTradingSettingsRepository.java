@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/strategy/AiTradingSettingsRepository.java
 package com.chicu.aibot.strategy.repository;
 
 import com.chicu.aibot.strategy.model.AiTradingSettings;

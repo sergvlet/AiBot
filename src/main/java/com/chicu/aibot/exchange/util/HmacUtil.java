@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/exchange/util/HmacUtil.java
 package com.chicu.aibot.exchange.util;
 
 import javax.crypto.Mac;

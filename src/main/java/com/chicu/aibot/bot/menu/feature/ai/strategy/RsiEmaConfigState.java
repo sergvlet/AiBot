@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/menu/feature/ai/strategy/RsiEmaConfigState.java
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
@@ -21,13 +20,17 @@ public class RsiEmaConfigState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        String text = "*RSI + EMA Strategy*\n\n"
-            + "Комбинирует RSI для поиска перекупленности/перепроданности и EMA для подтверждения тренда.\n\n"
-            + "*Дефолтные настройки:*\n"
-            + "- Период RSI: 14\n"
-            + "- Верхний порог RSI: 70\n"
-            + "- Нижний порог RSI: 30\n"
-            + "- Период EMA: 50\n";
+        String text = """
+                *RSI + EMA Strategy*
+                
+                Комбинирует RSI для поиска перекупленности/перепроданности и EMA для подтверждения тренда.
+                
+                *Дефолтные настройки:*
+                - Период RSI: 14
+                - Верхний порог RSI: 70
+                - Нижний порог RSI: 30
+                - Период EMA: 50
+                """;
 
         InlineKeyboardButton back = InlineKeyboardButton.builder()
             .text("‹ Назад")

@@ -23,7 +23,7 @@ public class FibonacciGridStrategySettings extends StrategySettings {
 
     /**
      * Уровни Фибоначчи (в виде десятичных долей, например 0.382, 0.618 и т.д.)
-     * Загружаем EAGER, чтобы избежать LazyInitializationException при рендере меню.
+     * Загружаем EAGER, чтобы избежать LazyInitializationException при рендер меню.
      */
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(

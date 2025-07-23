@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/menu/feature/ai/strategy/ScalpingConfigState.java
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
@@ -21,15 +20,19 @@ public class ScalpingConfigState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        String text = "*Scalping Strategy*\n\n"
-            + "Краткосрочная стратегия скальпинга, которая ищет мелкие ценовые колебания.\n\n"
-            + "*Дефолтные настройки:*\n"
-            + "- Размер окна (windowSize): 5\n"
-            + "- Порог изменения цены (priceChangeThreshold): 0.2%\n"
-            + "- Минимальный объём (minVolume): 10.0\n"
-            + "- Порог спрэда (spreadThreshold): 0.2%\n"
-            + "- Take profit: 1.0%\n"
-            + "- Stop loss: 0.5%\n";
+        String text = """
+                *Scalping Strategy*
+                
+                Краткосрочная стратегия скальпинг, которая ищет мелкие ценовые колебания.
+                
+                *Дефолтные настройки:*
+                - Размер окна (windowSize): 5
+                - Порог изменения цены (priceChangeThreshold): 0.2%
+                - Минимальный объём (minVolume): 10.0
+                - Порог спрэда (spreadThreshold): 0.2%
+                - Take profit: 1.0%
+                - Stop loss: 0.5%
+                """;
 
         InlineKeyboardButton back = InlineKeyboardButton.builder()
             .text("‹ Назад")

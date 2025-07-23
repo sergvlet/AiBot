@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/bot/menu/feature/ai/strategy/MaCrossoverConfigState.java
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
@@ -21,11 +20,15 @@ public class MaCrossoverConfigState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        String text = "*MA Crossover Strategy*\n\n"
-            + "Использует пересечение двух скользящих средних (быстрой и медленной) для сигналов.\n\n"
-            + "*Дефолтные настройки:*\n"
-            + "- Быстрая MA период: 20\n"
-            + "- Медленная MA период: 50\n";
+        String text = """
+                *MA Crossover Strategy*
+                
+                Использует пересечение двух скользящих средних (быстрой и медленной) для сигналов.
+                
+                *Дефолтные настройки:*
+                - Быстрая MA период: 20
+                - Медленная MA период: 50
+                """;
 
         InlineKeyboardButton back = InlineKeyboardButton.builder()
             .text("‹ Назад")
