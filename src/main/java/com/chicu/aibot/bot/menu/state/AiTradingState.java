@@ -20,27 +20,17 @@ public class AiTradingState implements MenuState {
     public AiTradingState() {
         this.keyboard = InlineKeyboardMarkup.builder()
             .keyboard(List.of(
-                // 1. Выбор стратегии
+
                 List.of(InlineKeyboardButton.builder()
                     .text("📂 Выбор стратегии")
                     .callbackData("ai_select_strategy")
                     .build()),
-                // 2. Настройка параметров
+
                 List.of(InlineKeyboardButton.builder()
                     .text("⚙️ Настройки параметров")
                     .callbackData("ai_settings_params")
                     .build()),
-                // 3. Запуск/Стоп
-                List.of(InlineKeyboardButton.builder()
-                    .text("▶️ Запустить бота")
-                    .callbackData("ai_start")
-                    .build(),
-                       InlineKeyboardButton.builder()
-                    .text("⏹ Остановить бота")
-                    .callbackData("ai_stop")
-                    .build()
-                ),
-                // 4. Статистика и уведомления
+
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("📈 Статистика")
@@ -51,7 +41,6 @@ public class AiTradingState implements MenuState {
                         .callbackData("ai_notifications")
                         .build()
                 ),
-                // 5. Назад
                 List.of(InlineKeyboardButton.builder()
                     .text("⬅️ Назад")
                     .callbackData("main")
@@ -86,8 +75,6 @@ public class AiTradingState implements MenuState {
         return switch (data) {
             case "ai_select_strategy"     -> "ai_select_strategy";
             case "ai_settings_params"     -> "ai_settings_params";
-            case "ai_start"               -> "ai_start";
-            case "ai_stop"                -> "ai_stop";
             case "ai_stats"               -> "ai_stats";
             case "ai_notifications"       -> "ai_notifications";
             case "main"                   -> MenuService.MAIN_MENU;

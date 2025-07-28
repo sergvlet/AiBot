@@ -20,7 +20,6 @@ public class ManualTradingSettingsState implements MenuState {
     public ManualTradingSettingsState() {
         this.keyboard = InlineKeyboardMarkup.builder()
             .keyboard(List.of(
-                // 1-й ряд: выбор типа торговли
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("🔄 Spot")
@@ -35,7 +34,6 @@ public class ManualTradingSettingsState implements MenuState {
                         .callbackData("manual_margin")
                         .build()
                 ),
-                // 2-й ряд: ордера, баланс, история
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("📝 Ордера")
@@ -50,7 +48,6 @@ public class ManualTradingSettingsState implements MenuState {
                         .callbackData("manual_history")
                         .build()
                 ),
-                // 3-й ряд: настройки и назад
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("⚙️ Настройки")
@@ -86,7 +83,6 @@ public class ManualTradingSettingsState implements MenuState {
         if (update.hasCallbackQuery()) {
             String data = update.getCallbackQuery().getData();
             log.info("ManualTradingSettingsState: нажата кнопка '{}'", data);
-            // вернуть ключ следующего состояния (должны быть реализованы соответствующие MenuState-классы)
             return switch (data) {
                 case "manual_spot"      -> "manual_spot";
                 case "manual_futures"   -> "manual_futures";
@@ -102,8 +98,7 @@ public class ManualTradingSettingsState implements MenuState {
                 }
             };
         }
-        // если пришло любое текстовое сообщение — показываем это же меню
-        log.info("ManualTradingSettingsState: текстовое сообщение, возвращаем меню");
+        log.info("ManualTradingSettingsState: возвращаем меню");
         return name();
     }
 }

@@ -48,16 +48,18 @@ public class ExchangeStatusState implements MenuState {
         };
 
         String text = String.format(
-                "*%s* (%s)\n\n" +
-                        "API ключи: %s\n" +
-                        "Соединение: %s",
+                """
+                        *%s* (%s)
+                        
+                        API ключи: %s
+                        Соединение: %s""",
                 s.getExchange(),
                 s.getNetwork(),
                 keyStatus,
                 connStatus
         );
 
-        var rows = List.<List<InlineKeyboardButton>>of(
+        var rows = List.of(
                 List.of(
                         InlineKeyboardButton.builder()
                                 .text(hasKeys ? "✏️ Изменить ключи" : "🔑 Ввести ключи")

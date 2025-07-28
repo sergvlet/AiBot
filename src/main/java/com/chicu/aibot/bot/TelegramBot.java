@@ -19,7 +19,7 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@SuppressWarnings("deprecation") // для getBotToken() и устаревшего конструктора супер класса
+@SuppressWarnings("deprecation")
 public class TelegramBot extends TelegramLongPollingBot {
 
     private final TelegramBotProperties props;
@@ -52,17 +52,13 @@ public class TelegramBot extends TelegramLongPollingBot {
         log.info("Получен update");
         Long chatId = extractChatId(update);
 
-        // 1) одноразовое уведомление
         menuService.popNotice(chatId).ifPresent(this::sendMessage);
 
-        // 2) новое состояние
         String state = menuService.handleInput(update);
         log.info("Переходим в состояние '{}'", state);
 
-        // 3) рендер
         SendMessage out = menuService.renderState(state, chatId);
 
-        // 4) callback → редактируем, если есть старое меню
         if (update.hasCallbackQuery()) {
             Integer msgId = sessionService.getMenuMessageId(chatId);
             if (msgId != null) {
@@ -78,7 +74,6 @@ public class TelegramBot extends TelegramLongPollingBot {
             }
         }
 
-        // 5) иначе — отправляем новое меню
         Message sent = sendMessage(out);
         if (sent != null) {
             sessionService.setMenuMessageId(chatId, sent.getMessageId());

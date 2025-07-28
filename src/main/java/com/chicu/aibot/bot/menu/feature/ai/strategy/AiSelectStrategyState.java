@@ -41,7 +41,6 @@ public class AiSelectStrategyState implements MenuState {
                 .build();
             rows.add(List.of(btn));
         }
-        // Кнопка «Назад» в AI-меню
         InlineKeyboardButton back = InlineKeyboardButton.builder()
             .text("‹ Назад")
             .callbackData("ai_trading")
@@ -72,12 +71,10 @@ public class AiSelectStrategyState implements MenuState {
             String code = data.substring("strategy_toggle:".length());
             StrategyType type = StrategyType.findByCode(code);
 
-            // переключаем включение/выключение
             AiTradingSettings cfg = settingsService.getOrCreate(chatId);
             boolean was = cfg.getSelectedStrategies().contains(type);
             settingsService.updateSelectedStrategies(chatId, type, !was);
 
-            // если теперь включено — сразу показываем экран настройки
             if (!was) {
                 return switch(type) {
                     case SCALPING       -> "scalping_config";
@@ -87,7 +84,6 @@ public class AiSelectStrategyState implements MenuState {
                     case BOLLINGER_BANDS-> "ai_trading_bollinger_config";
                 };
             }
-            // если выключили — остаёмся на экране списка
             return NAME;
         }
 

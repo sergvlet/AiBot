@@ -19,7 +19,6 @@ public class ManualFuturesState implements MenuState {
     public ManualFuturesState() {
         this.keyboard = InlineKeyboardMarkup.builder()
             .keyboard(List.of(
-                // 1. Пары
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("BTC/USDT")
@@ -34,7 +33,6 @@ public class ManualFuturesState implements MenuState {
                         .callbackData("futures_pair_sol_usdt")
                         .build()
                 ),
-                // 2. Тип ордера
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("📈 Market")
@@ -45,7 +43,6 @@ public class ManualFuturesState implements MenuState {
                         .callbackData("futures_order_limit")
                         .build()
                 ),
-                // 3. Действие: Long / Short
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("🟢 Long")
@@ -56,7 +53,6 @@ public class ManualFuturesState implements MenuState {
                         .callbackData("futures_action_short")
                         .build()
                 ),
-                // 4. Назад
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("⬅️ Назад")
@@ -75,10 +71,12 @@ public class ManualFuturesState implements MenuState {
     @Override
     public SendMessage render(Long chatId) {
         log.info("Рендер Futures-подменю для chatId={}", chatId);
-        String text = "*📈 Futures Trading* — торговля вечными контрактами с кредитным плечом.\n\n" +
-                      "1️⃣ Выберите торговую пару\n" +
-                      "2️⃣ Выберите тип ордера (Market / Limit)\n" +
-                      "3️⃣ Выберите позицию: *Long* или *Short*";
+        String text = """
+                *📈 Futures Trading* — торговля вечными контрактами с кредитным плечом.
+                
+                1️⃣ Выберите торговую пару
+                2️⃣ Выберите тип ордера (Market / Limit)
+                3️⃣ Выберите позицию: *Long* или *Short*""";
         return SendMessage.builder()
                 .chatId(chatId.toString())
                 .text(text)

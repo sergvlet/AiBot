@@ -6,7 +6,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Свойства бота: токен и username.
- * Читаются из application.yml (или application.properties).
+ * Читаются из application.properties.
  */
 @Component
 @ConfigurationProperties(prefix = "telegram.bot")

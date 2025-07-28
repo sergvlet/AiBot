@@ -17,7 +17,6 @@ public class MainMenuState implements MenuState {
     public MainMenuState() {
         this.keyboard = InlineKeyboardMarkup.builder()
             .keyboard(List.of(
-                // строка 1: AI-торговля, Выбор биржи, Ручная торговля
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("🤖 AI-торговля")
@@ -32,7 +31,6 @@ public class MainMenuState implements MenuState {
                         .callbackData("manual_trading_settings")
                         .build()
                 ),
-                // строка 2: О боте, Регистрация
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("ℹ️ О боте")
@@ -43,7 +41,6 @@ public class MainMenuState implements MenuState {
                         .callbackData("register")
                         .build()
                 ),
-                // строка 3: Тарифы
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("💳 Тарифы")

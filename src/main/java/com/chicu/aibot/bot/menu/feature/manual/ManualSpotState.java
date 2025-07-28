@@ -19,7 +19,6 @@ public class ManualSpotState implements MenuState {
     public ManualSpotState() {
         this.keyboard = InlineKeyboardMarkup.builder()
             .keyboard(List.of(
-                // 1. Выбор пары
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("BTC/USDT")
@@ -34,7 +33,6 @@ public class ManualSpotState implements MenuState {
                         .callbackData("spot_pair_ada_usdt")
                         .build()
                 ),
-                // 2. Тип ордера
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("📈 Market")
@@ -45,7 +43,6 @@ public class ManualSpotState implements MenuState {
                         .callbackData("spot_order_limit")
                         .build()
                 ),
-                // 3. Buy / Sell
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("🟢 Buy")
@@ -56,7 +53,6 @@ public class ManualSpotState implements MenuState {
                         .callbackData("spot_action_sell")
                         .build()
                 ),
-                // 4. Назад
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("⬅️ Назад")

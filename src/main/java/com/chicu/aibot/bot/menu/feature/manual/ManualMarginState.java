@@ -19,7 +19,6 @@ public class ManualMarginState implements MenuState {
     public ManualMarginState() {
         this.keyboard = InlineKeyboardMarkup.builder()
             .keyboard(List.of(
-                // 1. Пары
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("BTC/USDT")
@@ -30,7 +29,6 @@ public class ManualMarginState implements MenuState {
                         .callbackData("margin_pair_eth_usdt")
                         .build()
                 ),
-                // 2. Кредитное плечо
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("2×")
@@ -45,7 +43,6 @@ public class ManualMarginState implements MenuState {
                         .callbackData("margin_leverage_10x")
                         .build()
                 ),
-                // 3. Тип ордера
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("📈 Market")
@@ -56,7 +53,6 @@ public class ManualMarginState implements MenuState {
                         .callbackData("margin_order_limit")
                         .build()
                 ),
-                // 4. Buy / Sell
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("🟢 Buy")
@@ -67,7 +63,6 @@ public class ManualMarginState implements MenuState {
                         .callbackData("margin_action_sell")
                         .build()
                 ),
-                // 5. Назад
                 List.of(
                     InlineKeyboardButton.builder()
                         .text("⬅️ Назад")
@@ -86,11 +81,13 @@ public class ManualMarginState implements MenuState {
     @Override
     public SendMessage render(Long chatId) {
         log.info("Рендер Margin-подменю для chatId={}", chatId);
-        String text = "*⚖️ Margin Trading* — торговля с заемными средствами:\n\n" +
-                      "1️⃣ Выберите торговую пару\n" +
-                      "2️⃣ Выберите кредитное плечо\n" +
-                      "3️⃣ Выберите тип ордера (Market / Limit)\n" +
-                      "4️⃣ Укажите Buy или Sell";
+        String text = """
+                *⚖️ Margin Trading* — торговля с заемными средствами:
+                
+                1️⃣ Выберите торговую пару
+                2️⃣ Выберите кредитное плечо
+                3️⃣ Выберите тип ордера (Market / Limit)
+                4️⃣ Укажите Buy или Sell""";
         return SendMessage.builder()
                 .chatId(chatId.toString())
                 .text(text)
