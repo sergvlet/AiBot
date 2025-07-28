@@ -20,7 +20,6 @@ public class RegisterState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        // строим клавиатуру с кнопкой «Назад»
         InlineKeyboardMarkup keyboard = InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
                         List.of(
@@ -47,7 +46,6 @@ public class RegisterState implements MenuState {
                 return MenuService.MAIN_MENU;
             }
         }
-        // во всех остальных случаях тоже возвращаем в главное меню
         return MenuService.MAIN_MENU;
     }
 }

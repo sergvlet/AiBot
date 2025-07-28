@@ -1,6 +1,7 @@
 package com.chicu.aibot.exchange.service;
 
 
+import com.chicu.aibot.exchange.enums.ConnectionStatus;
 import com.chicu.aibot.exchange.model.ExchangeSettings;
 
 public interface ExchangeSettingsService {
@@ -10,4 +11,5 @@ public interface ExchangeSettingsService {
     void saveApiKeys(Long chatId, String publicKey, String secretKey);
     boolean hasApiKeys(Long chatId);
     boolean testConnection(Long chatId);
+    ConnectionStatus testConnectionVerbose(Long chatId);
 }

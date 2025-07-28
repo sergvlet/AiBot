@@ -17,57 +17,43 @@ import java.util.List;
 @EqualsAndHashCode(callSuper = true)
 public class FibonacciGridStrategySettings extends StrategySettings {
 
-    /** Торговый символ, например "BTCUSDT" */
     @Column(name = "symbol", nullable = false)
     private String symbol;
 
-    /**
-     * Уровни Фибоначчи (в виде десятичных долей, например 0.382, 0.618 и т.д.)
-     * Загружаем EAGER, чтобы избежать LazyInitializationException при рендер меню.
-     */
     @ElementCollection(fetch = FetchType.EAGER)
-    @CollectionTable(
-            name = "fibonacci_grid_levels",
-            joinColumns = @JoinColumn(name = "chat_id")
-    )
+    @CollectionTable(name = "fibonacci_grid_levels", joinColumns = @JoinColumn(name = "chat_id"))
     @Column(name = "level", nullable = false)
     private List<Double> levels;
 
-    /** Шаг сетки в процентах (расстояние между соседними ордерами) */
     @Column(name = "grid_size_pct", nullable = false)
     private Double gridSizePct;
 
-    /** Объявленный объём (кол-во базовой валюты) для каждого порядка */
     @Column(name = "order_volume", nullable = false)
     private Double orderVolume;
 
-    /** Максимальное число одновременно открытых ордеров */
     @Column(name = "max_active_orders", nullable = false)
     private Integer maxActiveOrders;
 
-    /** Take-Profit для всей сетки в процентах от средней цены всех ордеров */
     @Column(name = "take_profit_pct", nullable = false)
     private Double takeProfitPct;
 
-    /** Stop-Loss в процентах от входа (выключается при проскальзывании ниже минимального уровня) */
     @Column(name = "stop_loss_pct", nullable = false)
     private Double stopLossPct;
 
-    /** Разрешено ли открытие коротких позиций (short) */
     @Column(name = "allow_short", nullable = false)
     private Boolean allowShort;
 
-    /** Разрешено ли открытие длинных позиций (long) */
     @Column(name = "allow_long", nullable = false)
     private Boolean allowLong;
 
-    /** Таймфрейм, напр. "1h" */
     @Column(name = "timeframe", nullable = false)
     private String timeframe;
 
-    /** Сколько свечей брать из API для расчётов */
     @Column(name = "cached_candles_limit", nullable = false)
     private Integer cachedCandlesLimit;
+
+    @Column(name = "active", nullable = false)
+    private boolean active; // ✅ поддержка запуска/остановки
 
     @Version
     private Long version;
@@ -85,5 +71,15 @@ public class FibonacciGridStrategySettings extends StrategySettings {
     @Override
     public Integer getCachedCandlesLimit() {
         return cachedCandlesLimit;
+    }
+
+    @Override
+    public boolean isActive() {
+        return active;
+    }
+
+    @Override
+    public void setActive(boolean active) {
+        this.active = active;
     }
 }

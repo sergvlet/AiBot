@@ -1,11 +1,9 @@
 package com.chicu.aibot.strategy;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Id;
 import jakarta.persistence.MappedSuperclass;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
+import lombok.*;
 import lombok.experimental.SuperBuilder;
 
 @MappedSuperclass
@@ -19,6 +17,11 @@ public abstract class StrategySettings {
     @Id
     private Long chatId;
 
+    /** Активна ли стратегия */
+    @Builder.Default
+    @Column(name = "active", nullable = false)
+    protected boolean active = false;
+
     /** Тип текущей стратегии */
     public abstract StrategyType getType();
 
@@ -27,4 +30,5 @@ public abstract class StrategySettings {
 
     /** Сколько свечей брать при анализе */
     public abstract Integer getCachedCandlesLimit();
+
 }

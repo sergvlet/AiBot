@@ -13,4 +13,7 @@ public interface TradingStrategy {
 
     /** Вызов при каждом обновлении цены */
     void onPriceUpdate(Long chatId, double price);
+
+    double getCurrentPrice(Long chatId);
+
 }

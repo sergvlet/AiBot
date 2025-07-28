@@ -105,4 +105,11 @@ public class FibonacciGridStrategy implements TradingStrategy {
         // 6) Убираем из списка отменённые и полностью закрытые
         orders.removeIf(o -> o.isCancelled() || o.isClosed());
     }
+    @Override
+    public double getCurrentPrice(Long chatId) {
+        FibonacciGridStrategySettings cfg = settingsService.getOrCreate(chatId);
+        List<Candle> candles = candleService.getLastCandles(cfg.getSymbol(), cfg.getTimeframe(), 1);
+        return candles.isEmpty() ? 0.0 : candles.get(candles.size() - 1).getClose();
+    }
+
 }

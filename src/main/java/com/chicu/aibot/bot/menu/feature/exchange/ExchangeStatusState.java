@@ -3,6 +3,7 @@ package com.chicu.aibot.bot.menu.feature.exchange;
 import com.chicu.aibot.bot.menu.core.MenuService;
 import com.chicu.aibot.bot.menu.core.MenuState;
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
+import com.chicu.aibot.exchange.enums.ConnectionStatus;
 import com.chicu.aibot.exchange.model.ExchangeSettings;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
 import lombok.RequiredArgsConstructor;
@@ -17,47 +18,66 @@ import java.util.List;
 @Component
 @RequiredArgsConstructor
 public class ExchangeStatusState implements MenuState {
+
     public static final String NAME = "exchange_status";
+
     private final ExchangeSettingsService exchangeService;
     private final MenuSessionService session;
 
     @Override
-    public String name() { return NAME; }
+    public String name() {
+        return NAME;
+    }
 
     @Override
     public SendMessage render(Long chatId) {
         ExchangeSettings s = exchangeService.getOrCreate(chatId);
         boolean hasKeys = exchangeService.hasApiKeys(chatId);
-        boolean connected = hasKeys && exchangeService.testConnection(chatId);
+
+        var connectionStatus = hasKeys
+                ? exchangeService.testConnectionVerbose(chatId)
+                : ConnectionStatus.NO_KEYS;
+
+        String keyStatus = hasKeys ? "🔑 Сохранены" : "❌ Нет ключей";
+
+        String connStatus = switch (connectionStatus) {
+            case SUCCESS -> "✅ Подключено";
+            case INVALID_KEY -> "❌ Неверный ключ";
+            case CONNECTION_ERROR -> "⚠️ Ошибка соединения";
+            case NO_KEYS -> "❌ Нет ключей";
+        };
 
         String text = String.format(
-            "*%s* (%s)\n\n" +
-            "API ключи: %s\n" +
-            "Соединение: %s",
-            s.getExchange(),
-            s.getNetwork(),
-            hasKeys ? "🔑 Сохранены" : "❌ Нет ключей",
-            connected ? "✅ OK" : "❌ Не подключён"
+                "*%s* (%s)\n\n" +
+                        "API ключи: %s\n" +
+                        "Соединение: %s",
+                s.getExchange(),
+                s.getNetwork(),
+                keyStatus,
+                connStatus
         );
 
         var rows = List.<List<InlineKeyboardButton>>of(
-            List.of(
-                InlineKeyboardButton.builder()
-                    .text(hasKeys ? "✏️ Изменить ключи" : "🔑 Ввести ключи")
-                    .callbackData("exchange_api_input_public")
-                    .build()
-            ),
-            List.of(
-                InlineKeyboardButton.builder().text("‹ Назад").callbackData(MenuService.MAIN_MENU).build()
-            )
+                List.of(
+                        InlineKeyboardButton.builder()
+                                .text(hasKeys ? "✏️ Изменить ключи" : "🔑 Ввести ключи")
+                                .callbackData("exchange_api_input_public")
+                                .build()
+                ),
+                List.of(
+                        InlineKeyboardButton.builder()
+                                .text("‹ Назад")
+                                .callbackData(MenuService.MAIN_MENU)
+                                .build()
+                )
         );
 
         return SendMessage.builder()
-            .chatId(chatId.toString())
-            .parseMode("Markdown")
-            .text(text)
-            .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
-            .build();
+                .chatId(chatId.toString())
+                .parseMode("Markdown")
+                .text(text)
+                .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
+                .build();
     }
 
     @Override
