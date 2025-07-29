@@ -7,9 +7,7 @@ import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -22,42 +20,69 @@ public class MenuService {
     private final MenuSessionService sessionService;
     private final List<MenuState> states;
 
-    /** Ключ → состояние, заполняется в init() */
+    /** Хранилище всплывающих уведомлений (например, "⚠️ Не задано значение") */
+    private final Map<Long, String> notices = new HashMap<>();
+
+    /** Имя → объект состояния, наполняется при инициализации */
     private Map<String, MenuState> stateMap;
 
     @PostConstruct
     private void init() {
         stateMap = states.stream()
                 .collect(Collectors.toUnmodifiableMap(MenuState::name, s -> s));
-        log.info("MenuService: зарегистрированы состояния {}", stateMap.keySet());
+        log.info("✅ MenuService: зарегистрированы состояния: {}", stateMap.keySet());
     }
 
+    /**
+     * Установить отложенное уведомление, которое отобразится при следующем рендере.
+     */
+    public void deferNotice(Long chatId, String message) {
+        notices.put(chatId, message);
+    }
+
+    /**
+     * Извлечь и удалить уведомление (если есть).
+     */
     public Optional<SendMessage> popNotice(Long chatId) {
-        return Optional.empty();
+        String notice = notices.remove(chatId);
+        if (notice == null) return Optional.empty();
+
+        return Optional.of(
+                SendMessage.builder()
+                        .chatId(chatId.toString())
+                        .text(notice)
+                        .build()
+        );
     }
 
+    /**
+     * Обработка входного обновления: определение следующего состояния и его установка.
+     */
     public String handleInput(Update update) {
         Long chatId = extractChatId(update);
 
-        // 1) получаем текущее состояние или MAIN_MENU по умолчанию
+        // Получить текущее состояние или MAIN_MENU по умолчанию
         String current = Optional.ofNullable(sessionService.getCurrentState(chatId))
                 .orElse(MAIN_MENU);
 
-        // 2) вычисляем следующее состояние
+        // Найти обработчик
         MenuState handler = stateMap.getOrDefault(current, stateMap.get(MAIN_MENU));
         String next = handler.handleInput(update);
 
-        // 3) если неизвестное — сбрасываем
+        // Если следующее состояние не найдено — сбрасываем
         if (!stateMap.containsKey(next)) {
             log.warn("Unknown next state '{}', сбрасываем в MAIN_MENU", next);
             next = MAIN_MENU;
         }
 
-        // 4) сохраняем
+        // Сохраняем новое состояние
         sessionService.setCurrentState(chatId, next);
         return next;
     }
 
+    /**
+     * Отрисовать состояние по имени.
+     */
     public SendMessage renderState(String state, Long chatId) {
         MenuState ms = stateMap.get(state);
         if (ms == null) {
@@ -73,6 +98,6 @@ public class MenuService {
         } else if (u.hasMessage()) {
             return u.getMessage().getChatId();
         }
-        throw new IllegalArgumentException("Cannot extract chatId from Update");
+        throw new IllegalArgumentException("❌ Невозможно извлечь chatId из Update");
     }
 }

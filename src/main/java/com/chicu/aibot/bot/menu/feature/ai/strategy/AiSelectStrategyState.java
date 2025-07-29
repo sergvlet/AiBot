@@ -77,7 +77,7 @@ public class AiSelectStrategyState implements MenuState {
 
             if (!was) {
                 return switch(type) {
-                    case SCALPING       -> "scalping_config";
+                    case SCALPING -> "ai_trading_scalping_config";
                     case FIBONACCI_GRID -> "ai_trading_fibonacci_config";
                     case RSI_EMA        -> "ai_trading_rsi_ema_config";
                     case MA_CROSSOVER   -> "ai_trading_ma_crossover_config";

@@ -12,6 +12,7 @@ public class MenuSessionService {
     private final Map<Long, String>  currentStates  = new ConcurrentHashMap<>();
     private final Map<Long, String>  editingFields  = new ConcurrentHashMap<>();
     private final Map<Long, String>  nextValueKeys  = new ConcurrentHashMap<>();
+    private final Map<Long, String> returnStates = new ConcurrentHashMap<>();
 
     // menuMessageId
     public Integer getMenuMessageId(Long chatId) { return menuMessages.get(chatId); }
@@ -30,4 +31,13 @@ public class MenuSessionService {
     public void setNextValue(Long chatId, String key)   { nextValueKeys.put(chatId, key); }
     public String getNextValue(Long chatId)             { return nextValueKeys.get(chatId); }
     public void clearNextValue(Long chatId)             { nextValueKeys.remove(chatId); }
+
+    public void setReturnState(Long chatId, String state) {
+        returnStates.put(chatId, state);
+    }
+
+    public String getReturnState(Long chatId) {
+        return returnStates.get(chatId);
+    }
 }
+

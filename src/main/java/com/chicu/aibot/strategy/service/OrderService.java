@@ -18,4 +18,5 @@ public interface OrderService {
 
     /** Закрыть всё по исполненному ордеру (market или противоположным лимитом) */
     void closePosition(Order order);
-}
+
+    Order placeMarket(String symbol, Order.Side side, double quantity);}

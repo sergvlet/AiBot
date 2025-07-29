@@ -7,11 +7,12 @@ import org.springframework.stereotype.Service;
 import java.util.UUID;
 
 /**
- * Заглушка: генерирует фиктивные ордера с UUID.
- * Позже замените на вызовы реального API биржи.
+ * Упрощённая реализация OrderService для тестов.
+ * Рыночные ордера считаются сразу исполненными.
  */
 @Service
 public class DefaultOrderService implements OrderService {
+
     @Override
     public Order placeLimit(String symbol, Order.Side side, double price, double volume) {
         return new Order(
@@ -20,19 +21,34 @@ public class DefaultOrderService implements OrderService {
             side,
             price,
             volume,
-            false,
-            false,
-            false
+            false, // filled
+            false, // cancelled
+            false  // closed
         );
     }
 
     @Override
-    public void cancel(Order o) {
-        o.setCancelled(true);
+    public Order placeMarket(String symbol, Order.Side side, double volume) {
+        // Рыночный ордер считается сразу исполненным (filled = true)
+        return new Order(
+            UUID.randomUUID().toString(),
+            symbol,
+            side,
+            0.0,        // Цена неизвестна на момент создания
+            volume,
+            true,       // filled
+            false,      // cancelled
+            false       // closed
+        );
     }
 
     @Override
-    public void closePosition(Order o) {
-        o.setClosed(true);
+    public void cancel(Order order) {
+        order.setCancelled(true);
+    }
+
+    @Override
+    public void closePosition(Order order) {
+        order.setClosed(true);
     }
 }
