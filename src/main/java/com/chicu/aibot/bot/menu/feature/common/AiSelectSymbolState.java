@@ -1,4 +1,4 @@
-package com.chicu.aibot.bot.menu.feature.ai.strategy.common;
+package com.chicu.aibot.bot.menu.feature.common;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;
@@ -10,7 +10,6 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
 import java.util.List;
-import java.util.Map;
 
 @Component
 @RequiredArgsConstructor
@@ -27,15 +26,14 @@ public class AiSelectSymbolState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        // Предыдущее состояние, чтобы вернуться после выбора
         String backState = sessionService.getReturnState(chatId);
         if (backState == null) backState = "ai_trading";
 
-        String text = "*Выбор символа*\n\nВыберите, как вы хотите подобрать символ:";
+        String text = "*Выбор пары*\n\nВыберите, как вы хотите подобрать символ:";
 
         List<List<InlineKeyboardButton>> rows = List.of(
                 List.of(
-                        button("🔥 Популярные монеты", "symbol_popular"),
+                        button("🔥 Популярные пары", "symbol_popular"),
                         button("📈 Показывают рост", "symbol_gainers")
                 ),
                 List.of(

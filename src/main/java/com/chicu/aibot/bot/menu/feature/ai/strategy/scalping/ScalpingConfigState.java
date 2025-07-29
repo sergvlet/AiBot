@@ -2,7 +2,7 @@ package com.chicu.aibot.bot.menu.feature.ai.strategy.scalping;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.common.AiSelectSymbolState;
+import com.chicu.aibot.bot.menu.feature.common.AiSelectSymbolState;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.service.ScalpingStrategySettingsService;
 import com.chicu.aibot.trading.core.SchedulerService;
@@ -62,7 +62,7 @@ public class ScalpingConfigState implements MenuState {
         );
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>(List.of(
-                List.of(button("✏️ Символ", "edit_symbol"), button("✏️ Объем", "scalp_edit_orderVolume"), button("✏️ История", "scalp_edit_cachedCandlesLimit")),
+                List.of(button("✏️ Пара", "edit_symbol"), button("✏️ Объем", "scalp_edit_orderVolume"), button("✏️ История", "scalp_edit_cachedCandlesLimit")),
                 List.of(button("✏️ Окно", "scalp_edit_windowSize"), button("✏️ ΔЦены", "scalp_edit_priceChangeThreshold"), button("✏️ Макс. спред", "scalp_edit_spreadThreshold")),
                 List.of(button("✏️ TP", "scalp_edit_takeProfitPct"), button("✏️ SL", "scalp_edit_stopLossPct"), button("‹ Назад", "ai_trading")),
                 List.of(button(s.isActive() ? "🛑 Остановить стратегию" : "▶️ Запустить стратегию", "scalp_toggle_active"))

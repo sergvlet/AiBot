@@ -60,6 +60,13 @@ public class SchedulerServiceImpl implements SchedulerService {
         log.info("⛔ Стратегия {} остановлена для chatId={}", strategyName, chatId);
     }
 
+    @Override
+    public boolean isStrategyActive(Long chatId, String strategyName) {
+        String key = strategyKey(chatId, strategyName);
+        ScheduledFuture<?> future = runningStrategies.get(key);
+        return future != null && !future.isCancelled();
+    }
+
     private String strategyKey(Long chatId, String name) {
         return chatId + ":" + name;
     }

@@ -2,7 +2,7 @@ package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.common.AiSelectSymbolState;
+import com.chicu.aibot.bot.menu.feature.common.AiSelectSymbolState;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
 import com.chicu.aibot.trading.core.SchedulerService;
@@ -69,7 +69,7 @@ public class FibonacciGridConfigState implements MenuState {
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(
-                button("✏️ Символ", "edit_symbol"),
+                button("✏️ Пара", "edit_symbol"),
                 button("✏️ Уровни", "fibo_edit_levels"),
                 button("✏️ Шаг", "fibo_edit_gridSizePct")
         ));
