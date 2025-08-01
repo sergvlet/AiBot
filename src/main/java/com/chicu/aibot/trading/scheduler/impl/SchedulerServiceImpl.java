@@ -1,7 +1,8 @@
-package com.chicu.aibot.trading.core;
+package com.chicu.aibot.trading.scheduler.impl;
 
 import com.chicu.aibot.strategy.StrategyRegistry;
 import com.chicu.aibot.strategy.TradingStrategy;
+import com.chicu.aibot.trading.scheduler.SchedulerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

@@ -1,7 +1,7 @@
 package com.chicu.aibot.exchange.service;
 
-
 import com.chicu.aibot.exchange.enums.ConnectionStatus;
+import com.chicu.aibot.exchange.model.ExchangeApiKey;
 import com.chicu.aibot.exchange.model.ExchangeSettings;
 
 public interface ExchangeSettingsService {
@@ -12,4 +12,7 @@ public interface ExchangeSettingsService {
     boolean hasApiKeys(Long chatId);
     boolean testConnection(Long chatId);
     ConnectionStatus testConnectionVerbose(Long chatId);
+
+    /** 🆕 Получить сохранённые API-ключи (public+secret). */
+    ExchangeApiKey getApiKey(Long chatId);
 }

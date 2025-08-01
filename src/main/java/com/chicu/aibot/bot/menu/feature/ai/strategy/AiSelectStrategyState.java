@@ -1,7 +1,7 @@
 package com.chicu.aibot.bot.menu.feature.ai.strategy;
 
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.trading.core.SchedulerService;
+import com.chicu.aibot.trading.scheduler.SchedulerService;
 import com.chicu.aibot.strategy.StrategyType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;

@@ -112,4 +112,18 @@ public class ExchangeSettingsServiceImpl implements ExchangeSettingsService {
                 })
                 .orElse(ConnectionStatus.NO_KEYS);
     }
+    @Override
+    @Transactional(readOnly = true)
+    public ExchangeApiKey getApiKey(Long chatId) {
+        ExchangeSettings s = getOrCreate(chatId);
+        ExchangeApiKeyId id = ExchangeApiKeyId.builder()
+                .chatId(chatId)
+                .exchange(s.getExchange())
+                .network(s.getNetwork())
+                .build();
+
+        return apiKeyRepo.findById(id)
+                .orElseThrow(() -> new IllegalStateException("API keys not set for chat " + chatId));
+    }
+
 }

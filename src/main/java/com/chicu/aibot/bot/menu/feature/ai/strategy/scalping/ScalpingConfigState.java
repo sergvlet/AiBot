@@ -5,7 +5,7 @@ import com.chicu.aibot.bot.menu.core.MenuState;
 import com.chicu.aibot.bot.menu.feature.common.AiSelectSymbolState;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.service.ScalpingStrategySettingsService;
-import com.chicu.aibot.trading.core.SchedulerService;
+import com.chicu.aibot.trading.scheduler.SchedulerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;

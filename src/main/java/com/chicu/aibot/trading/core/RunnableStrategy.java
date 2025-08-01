@@ -1,4 +1,4 @@
-package com.chicu.aibot.strategy.core;
+package com.chicu.aibot.trading.core;
 
 public interface RunnableStrategy extends Runnable {
     String getStrategyName();
