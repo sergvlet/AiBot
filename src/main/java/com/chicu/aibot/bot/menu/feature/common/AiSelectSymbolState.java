@@ -9,6 +9,7 @@ import com.chicu.aibot.exchange.model.ExchangeSettings;
 import com.chicu.aibot.exchange.model.TickerInfo;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
@@ -20,6 +21,7 @@ import java.util.*;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class AiSelectSymbolState implements MenuState {
     public static final String NAME = "ai_select_symbol";
 
@@ -41,14 +43,14 @@ public class AiSelectSymbolState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        // При первом заходе запоминаем, для какой стратегии выбираем символ
+        // При первом заходе запомним, для какой стратегии выбираем символ
         if (sessionService.getAttribute(chatId, KEY_SVC) == null) {
             String from = sessionService.getReturnState(chatId);
             symbolServices.entrySet().stream()
-                    .filter(e -> e.getValue().getReturnState().equals(from))
-                    .map(Map.Entry::getKey)
-                    .findFirst()
-                    .ifPresent(key -> sessionService.setAttribute(chatId, KEY_SVC, key));
+                .filter(e -> e.getValue().getReturnState().equals(from))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .ifPresent(key -> sessionService.setAttribute(chatId, KEY_SVC, key));
         }
 
         List<String> all      = sessionService.getAttribute(chatId, KEY_LIST);
@@ -67,25 +69,25 @@ public class AiSelectSymbolState implements MenuState {
 
         String text = "*Выбор торговой пары*\n\nВыберите категорию или «Назад»:";
         List<List<InlineKeyboardButton>> rows = List.of(
-                List.of(
-                        button("🔥 Популярные",    "symbol_popular"),
-                        button("📈 Лидеры роста",  "symbol_gainers")
-                ),
-                List.of(
-                        button("📉 Лидеры падения","symbol_losers"),
-                        button("💰 По объёму",     "symbol_volume")
-                ),
-                List.of(
-                        button("‹ Назад", back)
-                )
+            List.of(
+                button("🔥 Популярные",    "symbol_popular"),
+                button("📈 Лидеры роста",  "symbol_gainers")
+            ),
+            List.of(
+                button("📉 Лидеры падения","symbol_losers"),
+                button("💰 По объёму",     "symbol_volume")
+            ),
+            List.of(
+                button("‹ Назад", back)
+            )
         );
 
         return SendMessage.builder()
-                .chatId(chatId.toString())
-                .text(text)
-                .parseMode("Markdown")
-                .replyMarkup(new InlineKeyboardMarkup(rows))
-                .build();
+            .chatId(chatId.toString())
+            .text(text)
+            .parseMode("Markdown")
+            .replyMarkup(new InlineKeyboardMarkup(rows))
+            .build();
     }
 
     private SendMessage renderPage(Long chatId,
@@ -101,7 +103,7 @@ public class AiSelectSymbolState implements MenuState {
         int to    = Math.min(from + PAGE_SIZE, total);
         List<String> slice = all.subList(from, to);
 
-        // 1) Заголовок и текст списка (2 пары на строку)
+        // 1) Заголовок
         String catLabel = switch (category) {
             case "symbol_popular" -> "Популярные";
             case "symbol_gainers" -> "Лидеры роста";
@@ -109,30 +111,49 @@ public class AiSelectSymbolState implements MenuState {
             case "symbol_volume"  -> "По объёму";
             default               -> "";
         };
-        StringBuilder body = new StringBuilder();
-        body.append(String.format("*Категория: %s*\nПары %d–%d из %d\n\n",
+        StringBuilder text = new StringBuilder();
+        text.append(String.format("*Категория: %s*\nПары %d–%d из %d\n\n",
                 catLabel, from + 1, to, total));
 
-        for (int i = 0; i < slice.size(); i += 2) {
-            // первая колонка
-            String sym1 = slice.get(i);
-            TickerInfo info1 = client.getTicker(sym1, net);
-            String col1 = formatInfo(sym1, info1);
-            // выравниваем в 25 символов
-            col1 = String.format("%-25s", col1);
-
-            // вторая колонка, если есть
-            String line = col1;
-            if (i + 1 < slice.size()) {
-                String sym2 = slice.get(i + 1);
-                TickerInfo info2 = client.getTicker(sym2, net);
-                String col2 = formatInfo(sym2, info2);
-                line += col2;
+        // 2) Собираем строки вида "SYMBOL: PRICE ARROW PCT%"
+        List<String> lines = new ArrayList<>();
+        for (String sym : slice) {
+            TickerInfo info;
+            try {
+                info = client.getTicker(sym, net);
+            } catch (RuntimeException e) {
+                // пропускаем если не удалось
+                continue;
             }
-            body.append(line).append("\n");
+            if (info == null) continue;
+
+            String price = info.getPrice()
+                    .setScale(2, RoundingMode.HALF_UP)
+                    .toPlainString();
+            String pct   = info.getChangePct()
+                    .setScale(2, RoundingMode.HALF_UP)
+                    .toPlainString();
+            // цветные стрелки
+            String arrow = info.getChangePct().signum() >= 0
+                    ? "↑"  // зелёная стрелка вверх
+                    : "↓"; // красная стрелка вниз
+
+            lines.add(String.format("%s: %s %s%% %s", sym, price, pct, arrow));
         }
 
-        // 2) Кнопки — по три символа в ряд
+        // 3) Выводим по две записи в строку
+        for (int i = 0; i < lines.size(); i += 2) {
+            if (i + 1 < lines.size()) {
+                text.append(lines.get(i))
+                        .append("    ")
+                        .append(lines.get(i + 1))
+                        .append("\n");
+            } else {
+                text.append(lines.get(i)).append("\n");
+            }
+        }
+
+        // 4) Кнопки — по четыре символа в ряд
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         for (int i = 0; i < slice.size(); i += 4) {
             List<InlineKeyboardButton> row = new ArrayList<>();
@@ -142,55 +163,41 @@ public class AiSelectSymbolState implements MenuState {
             rows.add(row);
         }
 
-        // 3) Навигация ‹Назад›/›Далее›
+        // 5) Навигация
         List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (page > 1)   nav.add(button("‹ Назад",  "symbol_page_" + (page - 1)));
-        if (to < total) nav.add(button("› Далее",  "symbol_page_" + (page + 1)));
+        if (page > 1)   nav.add(button("‹ Назад", "symbol_page_" + (page - 1)));
+        if (to < total) nav.add(button("› Далее", "symbol_page_" + (page + 1)));
         rows.add(nav);
 
-        // 4) Кнопка возврата в категории
+        // 6) Кнопка возврата в меню категорий
         rows.add(List.of(button("‹ Категории", NAME)));
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
-                .text(body.toString())
+                .text(text.toString())
                 .parseMode("Markdown")
                 .replyMarkup(new InlineKeyboardMarkup(rows))
                 .build();
     }
 
-    /**
-     * Формат строки: SYM: PRICE 🟢↑pct% или 🔴↓pct%
-     */
-    private String formatInfo(String sym, TickerInfo info) {
-        if (info == null) {
-            return sym + ": n/a";
-        }
-        String price = info.getPrice()
-                .setScale(2, RoundingMode.HALF_UP)
-                .toPlainString();
-        String pct   = info.getChangePct()
-                .abs()
-                .setScale(2, RoundingMode.HALF_UP)
-                .toPlainString();
-        boolean up   = info.getChangePct().signum() >= 0;
-        String arrow = up ? "🟢↑" : "🔴↓";
-        return String.format("%s: %s %s%s%%", sym, price, arrow, pct);
-    }
+
 
     @Override
     public String handleInput(Update update) {
         String data   = update.getCallbackQuery().getData();
         Long   chatId = update.getCallbackQuery().getMessage().getChatId();
 
-        // Сервис для сохранения выбранного символа
         String svcKey = sessionService.getAttribute(chatId, KEY_SVC);
         SymbolSettingsService symbolSvc = symbolServices.get(svcKey);
+        if (symbolSvc == null) {
+            log.error("SymbolSettingsService для '{}' не найден, возвращаем меню", svcKey);
+            return sessionService.getReturnState(chatId);
+        }
 
-        // 1) Пользователь выбрал категорию
+        // 1) Выбрали категорию
         if (data.startsWith("symbol_")
-                && !data.startsWith("symbol_page_")
-                && !data.startsWith("symbol_select_"))
+            && !data.startsWith("symbol_page_")
+            && !data.startsWith("symbol_select_"))
         {
             sessionService.setAttribute(chatId, KEY_CATEGORY, data);
             ExchangeSettings ex     = settingsService.getOrCreate(chatId);
@@ -219,7 +226,7 @@ public class AiSelectSymbolState implements MenuState {
             String symbol = data.substring("symbol_select_".length());
             Object settings = symbolSvc.getOrCreate(chatId);
             symbolSvc.saveSymbol(chatId, settings, symbol);
-            // Очищаем сессию
+            // очищаем
             sessionService.removeAttribute(chatId, KEY_LIST);
             sessionService.removeAttribute(chatId, KEY_PAGE);
             sessionService.removeAttribute(chatId, KEY_CATEGORY);
@@ -232,7 +239,7 @@ public class AiSelectSymbolState implements MenuState {
             sessionService.removeAttribute(chatId, KEY_LIST);
             sessionService.removeAttribute(chatId, KEY_PAGE);
             sessionService.removeAttribute(chatId, KEY_CATEGORY);
-            // KEY_SVC сохраняем, чтобы стратегия не потерялась
+            // KEY_SVC оставляем, чтобы при повторном заходе помнить стратегию
             return NAME;
         }
 
@@ -241,8 +248,8 @@ public class AiSelectSymbolState implements MenuState {
 
     private InlineKeyboardButton button(String text, String data) {
         return InlineKeyboardButton.builder()
-                .text(text)
-                .callbackData(data)
-                .build();
+            .text(text)
+            .callbackData(data)
+            .build();
     }
 }
