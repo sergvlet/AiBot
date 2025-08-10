@@ -31,7 +31,7 @@ public class ScalpingAdjustState implements MenuState {
             Map.entry("spreadThreshold",      new FieldMeta("Спред", "Макс. допустимый спред", 0.01)),
             Map.entry("takeProfitPct",        new FieldMeta("TP", "Take-Profit в %", 0.5)),
             Map.entry("stopLossPct",          new FieldMeta("SL", "Stop-Loss в %", 0.5)),
-            Map.entry("orderVolume",          new FieldMeta("Объем", "Объем рыночного ордера", 0.01)),
+            Map.entry("orderVolume",          new FieldMeta("Объем", "Объем рыночного ордера", 1.0)),
             Map.entry("timeframe",            new FieldMeta("Таймфрейм", "Таймфрейм свечей (например 1m)", null)),
             Map.entry("cachedCandlesLimit",   new FieldMeta("История", "Кол-во свечей для анализа", 10.0))
     );

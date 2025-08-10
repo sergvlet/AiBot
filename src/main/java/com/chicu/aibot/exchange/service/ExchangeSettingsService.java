@@ -12,7 +12,5 @@ public interface ExchangeSettingsService {
     boolean hasApiKeys(Long chatId);
     boolean testConnection(Long chatId);
     ConnectionStatus testConnectionVerbose(Long chatId);
-
-    /** 🆕 Получить сохранённые API-ключи (public+secret). */
     ExchangeApiKey getApiKey(Long chatId);
 }

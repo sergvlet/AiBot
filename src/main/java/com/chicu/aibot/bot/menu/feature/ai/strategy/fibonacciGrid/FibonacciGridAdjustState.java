@@ -29,7 +29,7 @@ public class FibonacciGridAdjustState implements MenuState {
             Map.entry("symbol",             new FieldMeta("Символ",     "Торговый символ, например BTCUSDT", null)),
             Map.entry("levels",             new FieldMeta("Уровни",      "Список уровней Фибоначчи",          null)),
             Map.entry("gridSizePct",        new FieldMeta("Шаг сетки",   "Расстояние между ордерами в %",     0.1)),
-            Map.entry("orderVolume",        new FieldMeta("Объём",       "Количество актива в ордере",        0.01)),
+            Map.entry("orderVolume",        new FieldMeta("Объём",       "Количество актива в ордере",        1.0)),
             Map.entry("maxActiveOrders",    new FieldMeta("Макс. ордеров", "Максимум открытых ордеров",       1.0)),
             Map.entry("takeProfitPct",      new FieldMeta("Take-Profit", "Фиксация профита, % от цены",       0.5)),
             Map.entry("stopLossPct",        new FieldMeta("Stop-Loss",   "Лимит убытка, % от цены",           0.5)),

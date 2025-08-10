@@ -43,7 +43,6 @@ public class AiSelectSymbolState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        // При первом заходе запомним, для какой стратегии выбираем символ
         if (sessionService.getAttribute(chatId, KEY_SVC) == null) {
             String from = sessionService.getReturnState(chatId);
             symbolServices.entrySet().stream()
@@ -135,8 +134,8 @@ public class AiSelectSymbolState implements MenuState {
                     .toPlainString();
             // цветные стрелки
             String arrow = info.getChangePct().signum() >= 0
-                    ? "↑"  // зелёная стрелка вверх
-                    : "↓"; // красная стрелка вниз
+                    ? "↑"
+                    : "↓";
 
             lines.add(String.format("%s: %s %s%% %s", sym, price, pct, arrow));
         }

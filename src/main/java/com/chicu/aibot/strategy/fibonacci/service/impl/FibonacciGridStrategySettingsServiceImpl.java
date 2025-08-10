@@ -1,50 +1,55 @@
 package com.chicu.aibot.strategy.fibonacci.service.impl;
 
+import com.chicu.aibot.strategy.common.DefaultTradingParamsResolver;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.repository.FibonacciGridStrategySettingsRepository;
 import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
-public class FibonacciGridStrategySettingsServiceImpl
-        implements FibonacciGridStrategySettingsService {
+public class FibonacciGridStrategySettingsServiceImpl implements FibonacciGridStrategySettingsService {
 
     private final FibonacciGridStrategySettingsRepository repo;
+    private final DefaultTradingParamsResolver defaults;
+
+    @Value("${trading.defaults.symbol:BTCUSDT}")
+    private String defaultSymbolProp;
+
+    @Value("${trading.defaults.timeframe.fibonacci:1h}")
+    private String defaultTfProp;
 
     @Override
     @Transactional
     public FibonacciGridStrategySettings getOrCreate(Long chatId) {
         return repo.findById(chatId).orElseGet(() -> {
-            // дефолтные параметры стратегии
+            String symbol    = defaults.resolveSymbol(chatId, defaultSymbolProp, "BTCUSDT");
+            String timeframe = defaults.resolveTimeframe(chatId, defaultTfProp, "1h");
+
+            log.info("⚙️ Не найдены настройки FibonacciGrid для chatId={}, создаю по умолчанию (symbol={}, tf={})",
+                    chatId, symbol, timeframe);
+
             FibonacciGridStrategySettings def = FibonacciGridStrategySettings.builder()
                     .chatId(chatId)
-                    // пример символа, можно заменить на пустую строку или взять из общих настроек
-                    .symbol("BTCUSDT")
-                    // стандартные уровни Фибоначчи
+                    .symbol(symbol)
                     .levels(List.of(0.382, 0.5, 0.618))
-                    // шаг сетки в процентах
                     .gridSizePct(1.0)
-                    // объём на ордер (в базовой валюте)
-                    .orderVolume(0.001)
-                    // максимальное число одновременно открытых ордеров
+                    .orderVolume(1.0)
                     .maxActiveOrders(5)
-                    // общая цель по прибыли в процентах
                     .takeProfitPct(2.0)
-                    // стоп-лосс в процентах
                     .stopLossPct(1.0)
-                    // разрешить длинные позиции
                     .allowLong(true)
-                    // не разрешать шорты
                     .allowShort(false)
-                    // таймфрейм
-                    .timeframe("1h")
-                    // сколько свечей грузить из API
+                    .timeframe(timeframe)
                     .cachedCandlesLimit(100)
+                    .active(false)
                     .build();
             return repo.saveAndFlush(def);
         });
@@ -53,6 +58,8 @@ public class FibonacciGridStrategySettingsServiceImpl
     @Override
     @Transactional
     public void save(FibonacciGridStrategySettings settings) {
+        log.info("💾 Сохраняю настройки FibonacciGrid для chatId={}", settings.getChatId());
         repo.saveAndFlush(settings);
+
     }
 }

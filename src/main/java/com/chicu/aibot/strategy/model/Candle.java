@@ -1,19 +1,22 @@
 package com.chicu.aibot.strategy.model;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
+import lombok.*;
+import java.math.BigDecimal;
 import java.time.Instant;
 
+/**
+ * Модель свечи из API биржи.
+ */
 @Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class Candle {
-    private Instant timestamp;
-    private double open;
-    private double high;
-    private double low;
-    private double close;
-    private double volume;
+    private String symbol;
+    private Instant openTime;
+    private BigDecimal open;
+    private BigDecimal high;
+    private BigDecimal low;
+    private BigDecimal close;
+    private BigDecimal volume;
 }
