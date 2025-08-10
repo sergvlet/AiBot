@@ -207,23 +207,25 @@ public class BybitExchangeClient implements ExchangeClient {
     public OrderResponse placeOrder(String apiKey, String secretKey, NetworkType network, OrderRequest req) {
         try {
             SymbolFilters f = getFilters(network, req.getSymbol());
-
             BigDecimal qtyNorm = quantize(req.getQuantity(), f.qtyStep());
             if (qtyNorm == null || qtyNorm.signum() == 0) {
                 throw new IllegalArgumentException("Quantity is zero after quantize");
             }
-            if (f.minOrderQty() != null && qtyNorm.compareTo(f.minOrderQty()) < 0) {
-                throw new IllegalArgumentException("Quantity is below minOrderQty");
-            }
+
+            // Bybit чувствителен к регистру
+            String orderType = switch (req.getType()) {
+                case LIMIT  -> "Limit";
+                case MARKET -> "Market";
+            };
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("category", "spot");
             body.put("symbol", req.getSymbol());
-            body.put("side", req.getSide() == OrderSide.BUY ? "Buy" : "Sell"); // Bybit формат
-            body.put("orderType", req.getType().name()); // LIMIT / MARKET
+            body.put("side", req.getSide().name().equals("BUY") ? "Buy" : "Sell");
+            body.put("orderType", orderType);
             body.put("qty", qtyNorm.stripTrailingZeros().toPlainString());
 
-            if (req.getType().name().equals("LIMIT")) {
+            if ("Limit".equals(orderType)) {
                 BigDecimal priceNorm = quantize(req.getPrice(), f.tickSize());
                 if (priceNorm == null || priceNorm.signum() == 0) {
                     throw new IllegalArgumentException("Price is zero after quantize");
@@ -233,16 +235,39 @@ public class BybitExchangeClient implements ExchangeClient {
             }
 
             String url = baseUrl(network) + "/v5/order/create";
-            JsonNode result = signedPost(url, body, apiKey, secretKey);
-            JsonNode r = result.path("result");
+
+            JsonNode root = signedPost(url, body, apiKey, secretKey);
+            int retCode = root.path("retCode").asInt(-1);
+            if (retCode != 0) {
+                String retMsg = root.path("retMsg").asText();
+                String details = root.path("result").toString();
+                throw new RuntimeException("Bybit create order failed: retCode=" + retCode + ", retMsg=" + retMsg + ", result=" + details);
+            }
+
+            JsonNode result = root.path("result");
+            String orderId = result.path("orderId").asText(null); // тут уже должен прийти
+            // статус при создании часто не возвращают — считаем NEW; уточним через getOrder/refresh
+            String status = result.hasNonNull("orderStatus")
+                    ? result.path("orderStatus").asText()
+                    : "NEW";
+
+            BigDecimal executed = BigDecimal.ZERO;
+            if (result.hasNonNull("cumExecQty")) {
+                executed = new BigDecimal(result.path("cumExecQty").asText("0"));
+            }
+
+            long ts = result.hasNonNull("createTime")
+                    ? result.path("createTime").asLong()
+                    : System.currentTimeMillis();
 
             return OrderResponse.builder()
-                    .orderId(r.path("orderId").asText(null))
-                    .symbol(r.path("symbol").asText(req.getSymbol()))
-                    .status(r.path("orderStatus").asText("NEW"))
-                    .executedQty(new BigDecimal(r.path("cumExecQty").asText("0")))
-                    .transactTime(Instant.ofEpochMilli(r.path("createTime").asLong(System.currentTimeMillis())))
+                    .orderId(orderId)
+                    .symbol(result.path("symbol").asText(req.getSymbol()))
+                    .status(status)
+                    .executedQty(executed)
+                    .transactTime(Instant.ofEpochMilli(ts))
                     .build();
+
         } catch (Exception ex) {
             log.error("❌ Bybit placeOrder failed: {}", ex.getMessage(), ex);
             throw new RuntimeException("Failed to place Bybit order", ex);

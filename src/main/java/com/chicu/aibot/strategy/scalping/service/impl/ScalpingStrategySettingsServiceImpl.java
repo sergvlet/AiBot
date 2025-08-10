@@ -34,18 +34,19 @@ public class ScalpingStrategySettingsServiceImpl implements ScalpingStrategySett
             log.info("⚙️ Не найдены настройки Scalping для chatId={}, создаю по умолчанию (symbol={}, tf={})",
                     chatId, symbol, timeframe);
 
+            // Дефолты под текущую типичную волатильность BTCUSDT на 1m
             ScalpingStrategySettings def = ScalpingStrategySettings.builder()
                     .chatId(chatId)
-                    .symbol(symbol)
-                    .timeframe(timeframe)
-                    .cachedCandlesLimit(200)
-                    .windowSize(14)
-                    .orderVolume(1.0)
-                    .priceChangeThreshold(0.5)
-                    .spreadThreshold(0.0)
-                    .takeProfitPct(0.8)
-                    .stopLossPct(0.5)
-                    .active(false)
+                    .symbol(symbol)              // BTCUSDT из application.yml можно переопределить
+                    .timeframe(timeframe)        // 1m
+                    .cachedCandlesLimit(300)     // истории достаточно
+                    .windowSize(20)              // окно для расчёта импульса
+                    .orderVolume(0.001)          // 0.001 BTC ~ “микро-лото”
+                    .priceChangeThreshold(0.15)  // вход при |Δцены| ≥ 0.15%
+                    .spreadThreshold(0.03)       // фильтр по спреду ≤ 0.03%
+                    .takeProfitPct(0.25)         // цель 0.25%
+                    .stopLossPct(0.20)           // SL 0.20%
+                    .active(false)               // по умолчанию выключено
                     .build();
 
             return repo.saveAndFlush(def);
