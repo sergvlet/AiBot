@@ -42,9 +42,24 @@ public class BybitExchangeClient implements ExchangeClient {
 
     /* ====================== helpers ====================== */
 
+    /** Нормализация базового URL: дефолт, схема https://, без хвостовых слэшей. */
     private String baseUrl(NetworkType network) {
-        String b = (network == NetworkType.MAINNET ? mainnetBaseUrl : testnetBaseUrl);
-        return b.replaceAll("/+$", "");
+        String raw = (network == NetworkType.MAINNET ? mainnetBaseUrl : testnetBaseUrl);
+
+        // дефолт, если в конфиге пусто
+        if (raw == null || raw.isBlank()) {
+            raw = (network == NetworkType.MAINNET)
+                    ? "https://api.bybit.com"
+                    : "https://api-testnet.bybit.com";
+        }
+
+        // если в конфиг подали "api.bybit.com" — добавим схему
+        if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+            raw = "https://" + raw;
+        }
+
+        // уберём хвостовые слэши
+        return raw.replaceAll("/+$", "");
     }
 
     private static String enc(String v) {
@@ -245,8 +260,7 @@ public class BybitExchangeClient implements ExchangeClient {
             }
 
             JsonNode result = root.path("result");
-            String orderId = result.path("orderId").asText(null); // тут уже должен прийти
-            // статус при создании часто не возвращают — считаем NEW; уточним через getOrder/refresh
+            String orderId = result.path("orderId").asText(null); // приходит сразу
             String status = result.hasNonNull("orderStatus")
                     ? result.path("orderStatus").asText()
                     : "NEW";
@@ -274,7 +288,7 @@ public class BybitExchangeClient implements ExchangeClient {
         }
     }
 
-    /* ===== NEW: отмена ордера ===== */
+    /* ===== Отмена ордера ===== */
     @Override
     public boolean cancelOrder(String apiKey, String secretKey, NetworkType network, String symbol, String orderId) {
         try {
@@ -296,7 +310,7 @@ public class BybitExchangeClient implements ExchangeClient {
         }
     }
 
-    /* ===== NEW: открытые ордера ===== */
+    /* ===== Открытые ордера ===== */
     @Override
     public List<OrderInfo> fetchOpenOrders(String apiKey, String secretKey, NetworkType network, String symbol) {
         List<OrderInfo> out = new ArrayList<>();
@@ -319,11 +333,11 @@ public class BybitExchangeClient implements ExchangeClient {
         return out;
     }
 
-    /* ===== NEW: статус конкретного ордера (realtime -> history fallback) ===== */
+    /* ===== Статус конкретного ордера (realtime -> history) ===== */
     @Override
     public Optional<OrderInfo> fetchOrder(String apiKey, String secretKey, NetworkType network,
-                                                  String symbol, String orderId) {
-        // 1) пробуем realtime
+                                          String symbol, String orderId) {
+        // 1) realtime
         String rt = baseUrl(network) + "/v5/order/realtime?category=spot"
                 + "&symbol=" + enc(symbol) + "&orderId=" + enc(orderId);
 
@@ -341,7 +355,7 @@ public class BybitExchangeClient implements ExchangeClient {
             currentSecretKey.remove();
         }
 
-        // 2) если в открытых нет — берём историю
+        // 2) history
         String hist = baseUrl(network) + "/v5/order/history?category=spot"
                 + "&symbol=" + enc(symbol) + "&orderId=" + enc(orderId);
 
@@ -382,7 +396,7 @@ public class BybitExchangeClient implements ExchangeClient {
                 .orderId(n.path("orderId").asText(null))
                 .symbol(n.path("symbol").asText(null))
                 .side(side)
-                .status(status.toUpperCase(Locale.ROOT)) // нормализуем под общий стиль
+                .status(status.toUpperCase(Locale.ROOT))
                 .price(price)
                 .executedQty(exec)
                 .build();
@@ -470,6 +484,8 @@ public class BybitExchangeClient implements ExchangeClient {
                     + "&interval=" + enc(bybitInterval)
                     + "&limit=" + limit;
 
+            // абсолютный URL гарантированно сформирован baseUrl()
+
             JsonNode list = parseJson(rest.getForObject(url, String.class))
                     .path("result").path("list");
             List<Candle> candles = new ArrayList<>();
@@ -508,26 +524,37 @@ public class BybitExchangeClient implements ExchangeClient {
         return tf;
     }
 
-    /** Преобразование ответа Bybit в наш OrderInfo */
+    /** Преобразование ответа Bybit в наш OrderInfo (короткая версия для fetch*) */
     private OrderInfo toOrderInfo(JsonNode n) {
         BigDecimal executed = BigDecimal.ZERO;
         if (n.hasNonNull("cumExecQty")) {
             String q = n.path("cumExecQty").asText("0");
             if (!q.isEmpty()) executed = new BigDecimal(q);
         }
+        String sideStr = n.path("side").asText("Buy");
+        OrderSide side = "Buy".equalsIgnoreCase(sideStr) ? OrderSide.BUY : OrderSide.SELL;
+
+        BigDecimal price = BigDecimal.ZERO;
+        if (n.hasNonNull("price")) {
+            String p = n.path("price").asText("0");
+            if (!p.isEmpty()) price = new BigDecimal(p);
+        }
+
         return OrderInfo.builder()
                 .orderId(n.path("orderId").asText(null))
                 .symbol(n.path("symbol").asText(null))
-                .status(n.path("orderStatus").asText("").toUpperCase(Locale.ROOT)) // New->NEW, Filled->FILLED...
+                .side(side)
+                .status(n.path("orderStatus").asText("").toUpperCase(Locale.ROOT))
+                .price(price)
                 .executedQty(executed)
                 .build();
     }
 
-    /** Реализация абстрактного метода интерфейса: статус конкретного ордера */
+    /** Реализация метода интерфейса: статус конкретного ордера (совместимая сигнатура) */
     @Override
     public OrderInfo getOrder(String apiKey, String secretKey,
                               NetworkType networkType, String symbol, String orderId) {
-        // 1) пробуем "realtime" (открытые/активные)
+        // 1) пробуем realtime
         String rt = baseUrl(networkType) + "/v5/order/realtime?category=spot"
                 + "&symbol=" + enc(symbol) + "&orderId=" + enc(orderId);
 
@@ -539,13 +566,13 @@ public class BybitExchangeClient implements ExchangeClient {
                 return toOrderInfo(list.get(0));
             }
         } catch (Exception ignore) {
-            // пойдём в историю
+            // fallback на историю
         } finally {
             currentApiKey.remove();
             currentSecretKey.remove();
         }
 
-        // 2) если в realtime нет — смотрим историю
+        // 2) история
         String hist = baseUrl(networkType) + "/v5/order/history?category=spot"
                 + "&symbol=" + enc(symbol) + "&orderId=" + enc(orderId);
 
@@ -563,10 +590,10 @@ public class BybitExchangeClient implements ExchangeClient {
             currentSecretKey.remove();
         }
 
-        return null; // не нашли
+        return null;
     }
 
-    /** Открытые ордера по символу — под сигнатуру интерфейса */
+    /** Открытые ордера (совместимая сигнатура) */
     @Override
     public List<OrderInfo> getOpenOrders(String apiKey, String secretKey,
                                          NetworkType networkType, String symbol) {

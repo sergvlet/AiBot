@@ -43,6 +43,8 @@ public class BinanceExchangeClient implements ExchangeClient {
 
     private String baseUrl(NetworkType network) {
         String b = (network == NetworkType.MAINNET ? mainnetBaseUrl : testnetBaseUrl);
+        if (b == null || b.isBlank()) b = "https://api.binance.com";
+        if (!b.startsWith("http")) b = "https://" + b;
         return b.replaceAll("/+$", "");
     }
 
@@ -75,6 +77,10 @@ public class BinanceExchangeClient implements ExchangeClient {
 
     private ResponseEntity<String> doPost(String url, HttpHeaders headers) {
         return rest.exchange(url, HttpMethod.POST, new HttpEntity<>((String) null, headers), String.class);
+    }
+
+    private ResponseEntity<String> doDelete(String url, HttpHeaders headers) {
+        return rest.exchange(url, HttpMethod.DELETE, new HttpEntity<>((String) null, headers), String.class);
     }
 
     /* ========== filters cache (exchangeInfo) ========== */
@@ -114,7 +120,9 @@ public class BinanceExchangeClient implements ExchangeClient {
                         minQty = new BigDecimal(f.path("minQty").asText("0"));
                     }
                     case "MIN_NOTIONAL", "NOTIONAL" -> {
-                        String mn = f.hasNonNull("minNotional") ? f.path("minNotional").asText("0") : f.path("notional").asText("0");
+                        String mn = f.hasNonNull("minNotional")
+                                ? f.path("minNotional").asText("0")
+                                : f.path("notional").asText("0");
                         minNotional = new BigDecimal(mn);
                     }
                     default -> {}
@@ -233,21 +241,21 @@ public class BinanceExchangeClient implements ExchangeClient {
                 throw new IllegalArgumentException("No price available for " + symbol);
             }
 
-            // Базовые квантизации
+            // Квантизация входных величин
             BigDecimal qtyNorm   = quantizeDown(req.getQuantity(), f.stepSize());
             BigDecimal priceNorm = quantizeDown(priceEff, f.tickSize());
 
             BigDecimal minNotional = Optional.ofNullable(f.minNotional()).orElse(BigDecimal.ZERO);
             BigDecimal minQty      = Optional.ofNullable(f.minQty()).orElse(BigDecimal.ZERO);
-            BigDecimal minQtyEff   = quantizeUp(minQty, f.stepSize()); // на всякий случай
+            BigDecimal minQtyEff   = quantizeUp(minQty, f.stepSize());
 
             Map<String, BigDecimal> bals = balances(apiKey, secretKey, n);
             BigDecimal baseFree  = bals.getOrDefault(f.baseAsset(), BigDecimal.ZERO);
             BigDecimal quoteFree = bals.getOrDefault(f.quoteAsset(), BigDecimal.ZERO);
 
             long ts = System.currentTimeMillis();
-            StringBuilder q = new StringBuilder();
-            q.append("symbol=").append(enc(symbol))
+            StringBuilder q = new StringBuilder()
+                    .append("symbol=").append(enc(symbol))
                     .append("&side=").append(req.getSide().name())
                     .append("&type=").append(req.getType().name())
                     .append("&recvWindow=").append(RECV_WINDOW)
@@ -256,38 +264,31 @@ public class BinanceExchangeClient implements ExchangeClient {
             switch (req.getType().name()) {
                 case "MARKET" -> {
                     if ("BUY".equals(req.getSide().name())) {
-                        // MARKET BUY через quoteOrderQty
+                        // MARKET BUY: используем quoteOrderQty, не тратим больше свободного quote
                         BigDecimal desiredSpend = (qtyNorm == null || qtyNorm.signum() == 0)
                                 ? quoteFree
                                 : priceEff.multiply(qtyNorm);
-                        BigDecimal spend = desiredSpend.max(minNotional);
-                        if (spend.compareTo(quoteFree) > 0) {
-                            throw new RuntimeException("Pre-check: insufficient quote balance for minNotional");
+                        BigDecimal spend = desiredSpend.min(quoteFree); // cap по свободным средствам
+                        if (spend.compareTo(minNotional) < 0) {
+                            throw new RuntimeException("Pre-check: quote balance below minNotional for MARKET BUY");
                         }
                         q.append("&quoteOrderQty=").append(spend.stripTrailingZeros().toPlainString());
                     } else {
-                        // MARKET SELL quantity
+                        // MARKET SELL: количество не больше свободного base, и не меньше минимально требуемого
                         BigDecimal needQtyNotional = (minNotional.signum() > 0)
-                                ? minNotional.divide(priceEff, 20, RoundingMode.UP)
+                                ? quantizeUp(minNotional.divide(priceEff, 20, RoundingMode.UP), f.stepSize())
                                 : BigDecimal.ZERO;
-                        needQtyNotional = quantizeUp(needQtyNotional, f.stepSize());
-
                         BigDecimal minRequired = needQtyNotional.max(minQtyEff);
 
-                        BigDecimal qty = qtyNorm;
-                        if (qty == null || qty.signum() == 0) qty = baseFree;
-
+                        BigDecimal qty = (qtyNorm == null || qtyNorm.signum() == 0) ? baseFree : qtyNorm;
+                        if (qty.compareTo(baseFree) > 0) qty = baseFree; // ключевая защита
+                        qty = quantizeDown(qty, f.stepSize());
+                        if (qty.signum() == 0) {
+                            throw new RuntimeException("Pre-check: base balance is zero for MARKET SELL");
+                        }
                         if (qty.compareTo(minRequired) < 0) {
-                            if (baseFree.compareTo(minRequired) < 0) {
-                                throw new RuntimeException("Pre-check: notional/qty too small for MARKET SELL and base balance is insufficient");
-                            }
-                            qty = minRequired;
+                            throw new RuntimeException("Pre-check: quantity below required min for MARKET SELL");
                         }
-
-                        if (qty.compareTo(minQtyEff) < 0) {
-                            throw new RuntimeException("Pre-check: quantity below minQty for MARKET SELL");
-                        }
-
                         q.append("&quantity=").append(qty.stripTrailingZeros().toPlainString());
                     }
                 }
@@ -295,16 +296,12 @@ public class BinanceExchangeClient implements ExchangeClient {
                     if (priceNorm == null || priceNorm.signum() == 0) {
                         throw new IllegalArgumentException("Price is zero after quantize");
                     }
-
                     BigDecimal needQtyNotional = (minNotional.signum() > 0)
-                            ? minNotional.divide(priceNorm, 20, RoundingMode.UP)
+                            ? quantizeUp(minNotional.divide(priceNorm, 20, RoundingMode.UP), f.stepSize())
                             : BigDecimal.ZERO;
-                    needQtyNotional = quantizeUp(needQtyNotional, f.stepSize());
-
                     BigDecimal minRequired = needQtyNotional.max(minQtyEff);
 
-                    BigDecimal qty = qtyNorm;
-                    if (qty == null || qty.signum() == 0) qty = minRequired;
+                    BigDecimal qty = (qtyNorm == null || qtyNorm.signum() == 0) ? minRequired : qtyNorm;
                     if (qty.compareTo(minRequired) < 0) qty = minRequired;
 
                     if ("SELL".equals(req.getSide().name())) {
@@ -350,7 +347,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<String> fetchPopularSymbols() {
         try {
-            String url = mainnetBaseUrl.replaceAll("/+$", "") + "/api/v3/ticker/24hr";
+            String url = baseUrl(NetworkType.MAINNET) + "/api/v3/ticker/24hr";
             JsonNode arr = parseJson(rest.getForObject(url, String.class));
             List<JsonNode> list = new ArrayList<>();
             arr.forEach(list::add);
@@ -365,7 +362,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<String> fetchGainers() {
         try {
-            String url = mainnetBaseUrl.replaceAll("/+$", "") + "/api/v3/ticker/24hr";
+            String url = baseUrl(NetworkType.MAINNET) + "/api/v3/ticker/24hr";
             JsonNode arr = parseJson(rest.getForObject(url, String.class));
             List<JsonNode> list = new ArrayList<>();
             arr.forEach(list::add);
@@ -380,7 +377,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<String> fetchLosers() {
         try {
-            String url = mainnetBaseUrl.replaceAll("/+$", "") + "/api/v3/ticker/24hr";
+            String url = baseUrl(NetworkType.MAINNET) + "/api/v3/ticker/24hr";
             JsonNode arr = parseJson(rest.getForObject(url, String.class));
             List<JsonNode> list = new ArrayList<>();
             arr.forEach(list::add);
@@ -496,11 +493,7 @@ public class BinanceExchangeClient implements ExchangeClient {
             return null;
         }
     }
-    // 4.1) вспомогательный delete
-    private ResponseEntity<String> doDelete(String url, HttpHeaders headers) {
-        return rest.exchange(url, HttpMethod.DELETE, new HttpEntity<>((String) null, headers), String.class);
-    }
-    // 4.2) открыть ордера
+
     @Override
     public List<OrderInfo> fetchOpenOrders(String apiKey, String secretKey, NetworkType n, String symbol) {
         try {
@@ -532,7 +525,7 @@ public class BinanceExchangeClient implements ExchangeClient {
             return Collections.emptyList();
         }
     }
-    // 4.3) конкретный ордер
+
     @Override
     public Optional<OrderInfo> fetchOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
         try {
@@ -561,7 +554,7 @@ public class BinanceExchangeClient implements ExchangeClient {
             return Optional.empty();
         }
     }
-    // 4.4) отмена ордера
+
     @Override
     public boolean cancelOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
         try {
@@ -576,5 +569,4 @@ public class BinanceExchangeClient implements ExchangeClient {
             return false;
         }
     }
-
 }
