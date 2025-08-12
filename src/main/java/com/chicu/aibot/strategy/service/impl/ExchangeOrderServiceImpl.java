@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.*;
 
 @Service
@@ -24,7 +25,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     /* ================= helpers ================= */
 
-    /** Хвосты котируемых валют, чтобы распарсить BASE/QUOTE из символа вида ETHUSDT, BTCUSDC, ETHBTC и т.п. */
+    /** Хвосты котируемых валют, чтобы распарсить BASE/QUOTE из символа вида ETHUSDT, BTCUSDC и т.д. */
     private static final List<String> KNOWN_QUOTES = List.of(
             "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI",
             "BTC", "ETH", "BNB",
@@ -71,7 +72,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     /* ================= pre-checks ================= */
 
-    /** Бросает IllegalStateException, если баланса недостаточно. Возвращает оценочную цену (для MARKET). */
+    /** Бросает IllegalStateException, если баланса недостаточно. */
     private void precheckLimit(
             String symbol, Order.Side side, double price, double quantity,
             AccountInfo acc, ExchangeClient client, ExchangeSettings settings
@@ -89,7 +90,6 @@ public class ExchangeOrderServiceImpl implements OrderService {
                         "Недостаточно " + base + " для LIMIT SELL: нужно " + qty + ", доступно " + baseFree);
             }
         } else {
-            // BUY: проверим котируемую валюту
             if (!quote.isBlank()) {
                 BigDecimal needQuote = pr.multiply(qty);
                 BigDecimal quoteFree = getFree(acc, quote);
@@ -101,38 +101,99 @@ public class ExchangeOrderServiceImpl implements OrderService {
         }
     }
 
-    private void precheckMarket(
-            String symbol, Order.Side side, double quantity,
-            AccountInfo acc, ExchangeClient client, ExchangeSettings settings
+    /**
+     * Нормализует MARKET-количество под доступный баланс и min notional.
+     * Возвращает количество, которое можно отправлять на биржу.
+     */
+    private double precheckAndNormalizeMarket(
+            ExchangeClient client, ExchangeSettings settings, ExchangeApiKey keys,
+            String symbol, Order.Side side, double qtyRequested
     ) {
-        String[] pq   = splitSymbol(symbol);
-        String base   = pq[0], quote = pq[1];
-        BigDecimal qty = BigDecimal.valueOf(quantity);
+        if (qtyRequested <= 0) {
+            throw new IllegalStateException("Количество должно быть > 0");
+        }
 
+        String[] pq = splitSymbol(symbol);
+        String base = pq[0], quote = pq[1];
+
+        // Текущая цена
+        TickerInfo t = client.getTicker(symbol, settings.getNetwork());
+        double price = toDouble(t.getPrice());
+        if (price <= 0) {
+            throw new IllegalStateException("Не удалось получить цену для " + symbol + " (price=" + price + ")");
+        }
+
+        // Балансы
+        AccountInfo acc = client.fetchAccountInfo(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork());
+        double baseFree  = toDouble(getFree(acc, base));
+        double quoteFree = toDouble(getFree(acc, quote));
+
+        // Базовая нормализация под баланс
+        double qty = qtyRequested;
         if (side == Order.Side.SELL) {
-            BigDecimal baseFree = getFree(acc, base);
-            if (baseFree.compareTo(qty) < 0) {
-                throw new IllegalStateException(
-                        "Недостаточно " + base + " для MARKET SELL: нужно " + qty + ", доступно " + baseFree);
+            if (baseFree <= 0.0) {
+                throw new IllegalStateException("Недостаточно " + base + " для MARKET SELL: доступно 0");
             }
-        } else {
-            // MARKET BUY: оценим цену по тикеру
+            qty = Math.min(qty, baseFree);
+        } else { // BUY
             if (!quote.isBlank()) {
-                TickerInfo t = client.getTicker(symbol, settings.getNetwork());
-                BigDecimal px = Optional.ofNullable(t.getPrice()).orElse(BigDecimal.ZERO);
-                if (px.signum() <= 0) {
-                    log.warn("Не удалось получить цену для MARKET BUY {}, пропускаю pre-check котируемой валюты", symbol);
-                    return; // не стопорим, но предупредим
+                double maxByFunds = quoteFree / price;
+                if (maxByFunds <= 0.0) {
+                    throw new IllegalStateException("Недостаточно " + quote + " для MARKET BUY: доступно " + quoteFree);
                 }
-                BigDecimal needQuote = px.multiply(qty);
-                BigDecimal quoteFree = getFree(acc, quote);
-                if (quoteFree.compareTo(needQuote) < 0) {
-                    throw new IllegalStateException(
-                            "Недостаточно " + quote + " для MARKET BUY: нужно ~" + needQuote + ", доступно " + quoteFree);
-                }
+                qty = Math.min(qty, maxByFunds);
             }
         }
+
+        // Требование по минимальному ноционалу (для стабильных котируемых — ~10)
+        double minNotional = minNotionalForQuote(quote);
+        if (minNotional > 0 && qty * price < minNotional) {
+            double needQty = minNotional / price;
+
+            if (side == Order.Side.BUY) {
+                double maxByFunds = quoteFree / price;
+                if (maxByFunds + 1e-12 < needQty) {
+                    throw new RuntimeException("Недостаточно " + quote +
+                            " для MARKET BUY с min notional " + minNotional + " " + quote +
+                            " (доступно " + format2(quoteFree) + " " + quote + ")");
+                }
+            } else { // SELL
+                if (baseFree + 1e-12 < needQty) {
+                    throw new RuntimeException("Недостаточно " + base +
+                            " для MARKET SELL с min notional " + minNotional + " " + quote +
+                            " (доступно " + format6(baseFree) + " " + base + ")");
+                }
+            }
+            qty = Math.max(qty, needQty);
+        }
+
+        // Округление количества ВНИЗ, чтобы не упереться в LOT_SIZE
+        qty = roundDown(qty);
+
+        if (qty <= 0.0) {
+            throw new RuntimeException("Количество после нормализации стало 0 — пропуск сделки.");
+        }
+        if (minNotional > 0 && qty * price + 1e-9 < minNotional) {
+            throw new RuntimeException("Не удаётся выполнить min notional (" + minNotional + " " + quote + ")");
+        }
+
+        log.info("Нормализовано qty для {} {}: qty={} (price={}, notional={})",
+                side, symbol, format6(qty), format6(price), format2(qty * price));
+        return qty;
     }
+
+    private static double minNotionalForQuote(String quote) {
+        if (quote == null) return 0.0;
+        String q = quote.toUpperCase(Locale.ROOT);
+        return (q.equals("USDT") || q.equals("FDUSD") || q.equals("BUSD") || q.equals("USDC") || q.equals("TUSD")) ? 10.0 : 0.0;
+    }
+
+    private static double roundDown(double v) {
+        return BigDecimal.valueOf(v).setScale(6, RoundingMode.DOWN).doubleValue();
+    }
+
+    private static String format2(double v) { return String.format("%,.2f", v); }
+    private static String format6(double v) { return String.format("%,.6f", v); }
 
     /* ================= API ================= */
 
@@ -182,17 +243,16 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
         ExchangeSettings settings = settingsService.getOrCreate(chatId);
         ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
-        ExchangeClient client                = clientFactory.getClient(settings.getExchange());
+        ExchangeClient   client   = clientFactory.getClient(settings.getExchange());
 
-        // PRE-CHECK баланса
-        AccountInfo acc = client.fetchAccountInfo(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork());
-        precheckMarket(symbol, side, quantity, acc, client, settings);
+        // 🔧 Нормализуем под баланс / min notional
+        double normQty = precheckAndNormalizeMarket(client, settings, keys, symbol, side, quantity);
 
         var req = OrderRequest.builder()
                 .symbol(symbol)
                 .side(side == Order.Side.BUY ? OrderSide.BUY : OrderSide.SELL)
                 .type(com.chicu.aibot.exchange.enums.OrderType.MARKET)
-                .quantity(BigDecimal.valueOf(quantity))
+                .quantity(BigDecimal.valueOf(normQty))
                 .build();
 
         var resp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
@@ -222,6 +282,28 @@ public class ExchangeOrderServiceImpl implements OrderService {
         ExchangeSettings settings = settingsService.getOrCreate(chatId);
         ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
         var client                = clientFactory.getClient(settings.getExchange());
+
+        // Узнаём актуальный статус у биржи (если доступен)
+        String statusNorm = "";
+        try {
+            var opt = client.fetchOrder(
+                    keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), order.getSymbol(), order.getId());
+            if (opt.isPresent()) {
+                statusNorm = normalizeStatus(opt.get().getStatus());
+            } else {
+                // fallback к локальным флагам
+                statusNorm = order.isFilled() ? "FILLED" : (order.isCancelled() ? "CANCELED" : "");
+            }
+        } catch (Exception e) {
+            log.debug("cancel(): не удалось получить статус ордера {}: {}", order.getId(), e.getMessage());
+        }
+
+        // Пропускаем отмену для терминальных статусов
+        if ("FILLED".equals(statusNorm) || "CANCELED".equals(statusNorm)
+                || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm)) {
+            log.info("Отмена пропущена: id={} status={}", order.getId(), statusNorm);
+            return;
+        }
 
         try {
             boolean ok = client.cancelOrder(

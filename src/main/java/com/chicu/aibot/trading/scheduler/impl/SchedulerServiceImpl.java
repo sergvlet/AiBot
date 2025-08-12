@@ -21,12 +21,17 @@ import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
+import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 @Service
@@ -37,14 +42,17 @@ public class SchedulerServiceImpl implements SchedulerService {
     private final ScalpingStrategySettingsRepository scalpingRepo;
     private final FibonacciGridStrategySettingsRepository fibRepo;
 
-    // --- автообновление UI ---
-    // ВАЖНО: чтобы не создать цикл, берём бота через ленивый провайдер
+    // ленивое получение бота, чтобы избежать циклов
     private final ObjectProvider<TelegramBot> botProvider;
     private final MenuSessionService sessionService;
     private final ScalpingPanelRenderer scalpingPanelRenderer;
 
     @Value("${ui.autorefresh.ms:1000}")
     private long uiAutorefreshMs;
+
+    // теперь этот флаг только про автозапуск из БД; ничего не останавливаем из-за него
+    @Value("${trading.autostart:false}")
+    private boolean tradingAutostart;
 
     private ScheduledThreadPoolExecutor scheduler;
     private final Map<String, ScheduledFuture<?>> runningTasks = new ConcurrentHashMap<>();
@@ -53,15 +61,31 @@ public class SchedulerServiceImpl implements SchedulerService {
     // отключённые панели (key = "<chatId>:<strategy>")
     private final Set<String> uiAutorefreshDisabled = ConcurrentHashMap.newKeySet();
 
+    // кэш последнего отправленного содержимого для пары chatId:messageId
+    private final Map<String, String> lastUiPayload = new ConcurrentHashMap<>();
+
+    // безопасная нумерация потоков (вместо Thread.getId(), который deprecated)
+    private static final AtomicLong SCHEDULER_THREAD_SEQ = new AtomicLong();
+
     @PostConstruct
     private void init() {
         int threads = Math.max(2, Runtime.getRuntime().availableProcessors());
-        this.scheduler = new ScheduledThreadPoolExecutor(threads);
+        this.scheduler = new ScheduledThreadPoolExecutor(threads, r -> {
+            Thread t = new Thread(r);
+            t.setName("ai-scheduler-" + SCHEDULER_THREAD_SEQ.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
         this.scheduler.setRemoveOnCancelPolicy(true);
         log.info("Планировщик инициализирован: {} поток(а/ов)", threads);
 
         // глобальная периодическая задача обновления UI
         startUiAutorefreshIfNeeded();
+
+        // автозапуск активных стратегий из БД (если включён)
+        startActiveFromDbIfEnabled();
+
+        // ВАЖНО: ничего не останавливаем на старте даже при trading.autostart=false.
     }
 
     @PreDestroy
@@ -69,6 +93,7 @@ public class SchedulerServiceImpl implements SchedulerService {
         log.info("Останавливаю планировщик…");
         if (uiRefreshFuture != null) uiRefreshFuture.cancel(true);
         scheduler.shutdownNow();
+        lastUiPayload.clear();
     }
 
     @Override
@@ -85,7 +110,7 @@ public class SchedulerServiceImpl implements SchedulerService {
             return;
         }
 
-        long intervalSec = resolveIntervalSec(chatId, strategyName);
+        long intervalSec = Math.max(1, resolveIntervalSec(chatId, strategyName)); // минимум 1s
         TradingStrategy strategy = registry.getStrategyOrThrow(strategyName);
 
         try {
@@ -119,7 +144,7 @@ public class SchedulerServiceImpl implements SchedulerService {
         log.info("Остановлена {} для chatId={}", strategyName, chatId);
     }
 
-    /** Перезапустить стратегию с актуальным тайм фреймом. */
+    /** Перезапустить стратегию с актуальным таймфреймом. */
     public void restartStrategy(Long chatId, String strategyName) {
         String key = buildKey(chatId, strategyName);
         TradingStrategy strategy = registry.getStrategyOrThrow(strategyName);
@@ -137,7 +162,7 @@ public class SchedulerServiceImpl implements SchedulerService {
             log.info("Стратегия {} для chatId={} не была запущена — перезапускаю как новую", strategyName, chatId);
         }
 
-        long intervalSec = resolveIntervalSec(chatId, strategyName);
+        long intervalSec = Math.max(1, resolveIntervalSec(chatId, strategyName));
         try {
             strategy.start(chatId);
         } catch (Exception e) {
@@ -157,9 +182,18 @@ public class SchedulerServiceImpl implements SchedulerService {
         return f != null && !f.isDone() && !f.isCancelled();
     }
 
-    // === управление авто обновлением UI ===
+    // ======== ПУБЛИЧНОЕ УПРАВЛЕНИЕ UI-АВТООБНОВЛЕНИЕМ ПАНЕЛИ (тумблер) ========
 
-
+    public void setUiAutorefreshEnabled(Long chatId, String strategyName, boolean enabled) {
+        String key = buildKey(chatId, strategyName);
+        if (enabled) {
+            uiAutorefreshDisabled.remove(key);
+            log.debug("UI автorefresh включён для {}", key);
+        } else {
+            uiAutorefreshDisabled.add(key);
+            log.debug("UI автorefresh отключён для {}", key);
+        }
+    }
 
     // ==================== внутренняя логика ====================
 
@@ -219,6 +253,11 @@ public class SchedulerServiceImpl implements SchedulerService {
     }
 
     private void startUiAutorefreshIfNeeded() {
+        // если задан 0 или отрицательное значение — не включаем автorefresh
+        if (uiAutorefreshMs <= 0) {
+            log.info("UI автообновление отключено (ui.autorefresh.ms={})", uiAutorefreshMs);
+            return;
+        }
         if (uiRefreshFuture == null || uiRefreshFuture.isCancelled() || uiRefreshFuture.isDone()) {
             uiRefreshFuture = scheduler.scheduleAtFixedRate(
                     this::refreshScalpingPanelsSafe,
@@ -271,12 +310,58 @@ public class SchedulerServiceImpl implements SchedulerService {
 
                 TelegramBot bot = botProvider.getIfAvailable();
                 if (bot != null) {
-                    bot.execute(edit);
+                    safeEdit(bot, edit);
                 }
             } catch (Exception e) {
                 log.debug("Не удалось обновить UI для chatId={}: {}", chatId, e.getMessage());
             }
         }
+    }
+
+    /** Отправляет edit только если контент реально изменился. Гасит «message is not modified». */
+    private void safeEdit(TelegramBot bot, EditMessageText edit) {
+        String chatId = edit.getChatId();
+        Integer messageId = edit.getMessageId();
+        String key = chatId + ":" + messageId;
+
+        String payload = buildPayload(
+                edit.getText(),
+                (InlineKeyboardMarkup) edit.getReplyMarkup(),
+                edit.getParseMode(),
+                edit.getDisableWebPagePreview()
+        );
+
+        String prev = lastUiPayload.put(key, payload);
+        if (payload.equals(prev)) {
+            // Ничего не изменилось — не дергаем Telegram API
+            return;
+        }
+        try {
+            bot.execute(edit);
+        } catch (TelegramApiRequestException e) {
+            String resp = e.getApiResponse();
+            if (resp != null && resp.contains("message is not modified")) {
+                // подстраховка на случай гонок
+                log.debug("UI: пропущено обновление (без изменений) chatId={}, msgId={}", chatId, messageId);
+                return;
+            }
+            throw new RuntimeException(e);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private String buildPayload(String text,
+                                InlineKeyboardMarkup markup,
+                                String parseMode,
+                                Boolean disablePreview) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(text == null ? "" : text).append('|');
+        sb.append(parseMode == null ? "" : parseMode).append('|');
+        sb.append(Boolean.TRUE.equals(disablePreview)).append('|');
+        // toString у InlineKeyboardMarkup даёт стабильный JSON-подобный вывод — достаточно для сравнения
+        sb.append(markup == null ? "null" : markup.toString());
+        return sb.toString();
     }
 
     private Long extractChatId(String key) {
@@ -313,5 +398,26 @@ public class SchedulerServiceImpl implements SchedulerService {
             }
         }
         return null;
+    }
+
+    private void startActiveFromDbIfEnabled() {
+        if (!tradingAutostart) {
+            log.info("Автозапуск стратегий отключён (trading.autostart=false). Ничего не останавливаем.");
+            return;
+        }
+        scalpingRepo.findAll().stream()
+                .filter(ScalpingStrategySettings::isActive)
+                .forEach(s -> safeStart(s.getChatId(), "SCALPING"));
+
+        fibRepo.findAll().stream()
+                .filter(FibonacciGridStrategySettings::isActive)
+                .forEach(f -> safeStart(f.getChatId(), "FIBONACCI_GRID"));
+    }
+
+    private void safeStart(Long chatId, String name) {
+        try { startStrategy(chatId, name); }
+        catch (Exception e) {
+            log.error("Автозапуск {} @{} провален: {}", name, chatId, e.getMessage());
+        }
     }
 }
