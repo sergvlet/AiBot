@@ -10,6 +10,5 @@ public interface SchedulerService {
         }
         startStrategy(chatId, strategyName);
     }
-    void ensureUiAutorefreshEnabled(Long chatId, String stateName);
-    void disableUiAutorefresh(Long chatId, String stateName);
+
 }

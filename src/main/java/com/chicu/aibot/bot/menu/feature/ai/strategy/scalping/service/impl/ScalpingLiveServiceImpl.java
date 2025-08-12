@@ -9,7 +9,6 @@ import com.chicu.aibot.exchange.model.Balance;
 import com.chicu.aibot.exchange.model.OrderInfo;
 import com.chicu.aibot.exchange.model.TickerInfo;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
-import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.service.ScalpingStrategySettingsService;
 import com.chicu.aibot.trading.trade.TradeLogService;
 import lombok.RequiredArgsConstructor;
@@ -26,13 +25,12 @@ public class ScalpingLiveServiceImpl implements ScalpingLiveService {
 
     private final ExchangeSettingsService settingsService;
     private final ExchangeClientFactory clientFactory;
-    private final ScalpingStrategySettingsService scalpingSettings;
-    private final TradeLogService tradeLogService; // уже обсуждали
+    private final ScalpingStrategySettingsService scalpingSettings; // можно удалить, если не нужен
+    private final TradeLogService tradeLogService;                 // оставлен на будущее
 
     @Override
     public LiveSnapshot build(Long chatId, String symbol) {
-        ScalpingStrategySettings s = scalpingSettings.getOrCreate(chatId);
-
+        // настройки биржи/ключей
         var settings = settingsService.getOrCreate(chatId);
         var keys     = settingsService.getApiKey(chatId);
         ExchangeClient client = clientFactory.getClient(settings.getExchange());
@@ -40,8 +38,11 @@ public class ScalpingLiveServiceImpl implements ScalpingLiveService {
         // Тикер
         TickerInfo t = client.getTicker(symbol, settings.getNetwork());
         double price = t.getPrice().doubleValue();
-        String priceStr  = fmtPrice(t.getPrice());
-        String changeStr = formatChangePct(t.getChangePct());
+        String priceStr = fmtPrice(t.getPrice());
+
+        // Нормализуем изменение: если пришла доля (0.0123), превращаем в проценты (1.23)
+        double raw = t.getChangePct() == null ? 0.0 : t.getChangePct().doubleValue();
+        double changePct = Math.abs(raw) <= 1.0 ? raw * 100.0 : raw;
 
         // Балансы
         String[] pq = splitSymbol(symbol); // [BASE, QUOTE]
@@ -72,7 +73,7 @@ public class ScalpingLiveServiceImpl implements ScalpingLiveService {
 
         return LiveSnapshot.builder()
                 .priceStr(priceStr)
-                .changeStr(changeStr)
+                .changePct(changePct)                // <-- ключевая замена
                 .base(base)
                 .quote(quote)
                 .baseBal(baseBal)
@@ -91,7 +92,6 @@ public class ScalpingLiveServiceImpl implements ScalpingLiveService {
                 return new String[]{symbol.substring(0, symbol.length()-q.length()), q};
             }
         }
-        // fallback: разделим по 4 символам
         int mid = Math.max(3, symbol.length()-4);
         return new String[]{symbol.substring(0, mid), symbol.substring(mid)};
     }
@@ -101,9 +101,5 @@ public class ScalpingLiveServiceImpl implements ScalpingLiveService {
     }
     private static String fmtQty(BigDecimal v) {
         return new DecimalFormat("#,##0.########").format(v);
-    }
-    private static String formatChangePct(BigDecimal pct) {
-        double d = pct.multiply(BigDecimal.valueOf(100)).doubleValue();
-        return (d >= 0 ? "▲ +" : "▼ ") + new DecimalFormat("0.00'%'").format(Math.abs(d));
     }
 }

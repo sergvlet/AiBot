@@ -43,7 +43,7 @@ public class SchedulerServiceImpl implements SchedulerService {
     private final MenuSessionService sessionService;
     private final ScalpingPanelRenderer scalpingPanelRenderer;
 
-    @Value("${ui.autorefresh.ms:12000}")
+    @Value("${ui.autorefresh.ms:1000}")
     private long uiAutorefreshMs;
 
     private ScheduledThreadPoolExecutor scheduler;
@@ -159,16 +159,7 @@ public class SchedulerServiceImpl implements SchedulerService {
 
     // === управление авто обновлением UI ===
 
-    @Override
-    public void disableUiAutorefresh(Long chatId, String strategyName) {
-        uiAutorefreshDisabled.add(buildKey(chatId, strategyName));
-    }
 
-    @Override
-    public void ensureUiAutorefreshEnabled(Long chatId, String strategyName) {
-        uiAutorefreshDisabled.remove(buildKey(chatId, strategyName));
-        startUiAutorefreshIfNeeded();
-    }
 
     // ==================== внутренняя логика ====================
 

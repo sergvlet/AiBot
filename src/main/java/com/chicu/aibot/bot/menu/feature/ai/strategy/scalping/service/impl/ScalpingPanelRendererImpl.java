@@ -20,7 +20,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
 
-    public static final String NAME = "ai_trading_scalping_config";
+    public static final String NAME            = "ai_trading_scalping_config";
     public static final String BTN_REFRESH     = "scalp_refresh";
     public static final String BTN_EDIT_SYMBOL = "edit_symbol";
     public static final String BTN_TOGGLE      = "scalp_toggle_active";
@@ -35,9 +35,14 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
         String symbol = nvl(s.getSymbol());
 
         LiveSnapshot live = liveService.build(chatId, symbol);
-        String pnlBlock = buildPnlBlock(chatId, symbol, live);
+        String pnlBlock   = buildPnlBlock(chatId, symbol, live);
 
-        String text = """
+        String openOrdersBlock = live.getOpenOrdersBlock();
+        if (openOrdersBlock == null || openOrdersBlock.isBlank()) {
+            openOrdersBlock = "_нет_";
+        }
+
+        String text = ("""
                 *📊 Scalping Strategy*
                 %s
 
@@ -61,12 +66,12 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 • ΔЦены: `%.2f%%` • Макс. спред: `%.2f%%`
                 • TP: `%.2f%%` • SL: `%.2f%%`
                 • Статус: *%s*
-                """.formatted(
+                """).stripTrailing().formatted(
                 s.isActive() ? "Стратегия: 🟢 *Запущена*" : "Стратегия: 🔴 *Остановлена*",
 
                 symbol,
-                live.getChangeStr(),             // сначала изменение
-                live.getPriceStr(),              // затем цена
+                live.getChangeStr(),          // сначала изменение
+                live.getPriceStr(),           // затем цена
 
                 live.getBase(),  live.getBaseBal(),
                 live.getQuote(), live.getQuoteBal(),
@@ -74,8 +79,7 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 pnlBlock,
 
                 live.getOpenCount(),
-                (live.getOpenOrdersBlock() == null || live.getOpenOrdersBlock().isBlank())
-                        ? "_нет_" : live.getOpenOrdersBlock(),
+                openOrdersBlock,
 
                 s.getOrderVolume(),
                 s.getTimeframe(),
@@ -113,10 +117,8 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
         double qty   = last.getQuantity();
         double now   = live.getLastPrice();
 
-        double pnlAbs;      // в quote
-        double pnlPct;      // %
-        String dirEmoji;
-
+        double pnlAbs; // в quote
+        double pnlPct; // в %
         switch (last.getSide()) {
             case BUY -> {
                 pnlAbs = (now - entry) * qty;
@@ -131,26 +133,32 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 pnlPct = 0.0;
             }
         }
-        dirEmoji = pnlAbs >= 0 ? "🟢" : "🔴";
 
-        String pnlAbsS = formatMoney(pnlAbs, live.getQuote());
-        String pnlPctS = String.format("%s%.2f%%", (pnlPct >= 0 ? "+" : ""), pnlPct);
-        String investedS = formatMoney(entry * qty, live.getQuote());
+        String dirEmoji = pnlAbs >= 0 ? "🟢" : "🔴";
+        String investedS = formatMoneyAbs(entry * qty, live.getQuote());
+        String pnlAbsS   = formatMoneyAbs(pnlAbs, live.getQuote());
+        String pnlPctS   = signedPct(pnlPct);
 
-        return """
+        return ("""
                • Последняя: *%s* %s @`%.8f`  qty `%.6f`
                • Вложено: `%s`
                • PnL: %s `%s`  (%s)
-               """.stripTrailing().formatted(
+               """).stripTrailing().formatted(
                 last.getSide().name(), symbol, entry, qty,
                 investedS,
                 dirEmoji, pnlAbsS, pnlPctS
         );
     }
 
-    private static String formatMoney(double v, String quote) {
+    /** Деньги без знака, знак отображаем эмодзи/отдельно. */
+    private static String formatMoneyAbs(double v, String quote) {
         String s = String.format("%,.2f", Math.abs(v));
-        return (v < 0 ? "-" : "+") + s + " " + quote;
+        return s + " " + quote;
+    }
+
+    private static String signedPct(double v) {
+        // красивый знак для процентов: +1.23% / -0.77%
+        return String.format("%s%.2f%%", (v >= 0 ? "+" : "-"), Math.abs(v));
     }
 
     private static String nvl(String s) {
