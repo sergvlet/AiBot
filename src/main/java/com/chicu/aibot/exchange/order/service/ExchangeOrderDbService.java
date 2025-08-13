@@ -6,6 +6,7 @@ import com.chicu.aibot.exchange.model.OrderResponse;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.repository.ExchangeOrderRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -74,5 +75,11 @@ public class ExchangeOrderDbService {
 
     public List<ExchangeOrderEntity> findAllOpen() {
         return repo.findByStatusIn(OPEN);
+    }
+
+    // ➕ Новое: последние N FILLED-сделок
+    public List<ExchangeOrderEntity> findRecentFilled(Long chatId, String symbol, int limit) {
+        return repo.findByChatIdAndSymbolAndStatusOrderByUpdatedAtDesc(
+                chatId, symbol, "FILLED", PageRequest.of(0, Math.max(1, limit)));
     }
 }

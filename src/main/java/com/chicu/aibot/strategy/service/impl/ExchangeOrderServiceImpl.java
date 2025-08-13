@@ -4,15 +4,19 @@ import com.chicu.aibot.exchange.client.ExchangeClient;
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
 import com.chicu.aibot.exchange.enums.OrderSide;
 import com.chicu.aibot.exchange.model.*;
+import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
+import com.chicu.aibot.exchange.order.repository.ExchangeOrderRepository;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
 import com.chicu.aibot.strategy.model.Order;
 import com.chicu.aibot.strategy.service.OrderService;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.*;
 
 @Service
@@ -22,6 +26,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     private final ExchangeClientFactory clientFactory;
     private final ExchangeSettingsService settingsService;
+    private final ExchangeOrderRepository orderRepo;
 
     /* ================= helpers ================= */
 
@@ -101,16 +106,20 @@ public class ExchangeOrderServiceImpl implements OrderService {
         }
     }
 
+    /** Контекст нормализации для MARKET: что реально купим/продадим и по какой референтной цене. */
+    private record MarketCtx(double qty, double refPrice) {}
+
     /**
      * Нормализует MARKET-количество под доступный баланс и min notional.
-     * Возвращает количество, которое можно отправлять на биржу.
+     * Возвращает MarketCtx (qty==0 означает «пропуск сделки» вместо исключения).
      */
-    private double precheckAndNormalizeMarket(
+    private MarketCtx precheckAndNormalizeMarket(
             ExchangeClient client, ExchangeSettings settings, ExchangeApiKey keys,
             String symbol, Order.Side side, double qtyRequested
     ) {
         if (qtyRequested <= 0) {
-            throw new IllegalStateException("Количество должно быть > 0");
+            log.warn("Количество должно быть > 0 для MARKET {}, запрос={} → пропуск.", symbol, qtyRequested);
+            return new MarketCtx(0.0, 0.0);
         }
 
         String[] pq = splitSymbol(symbol);
@@ -120,7 +129,8 @@ public class ExchangeOrderServiceImpl implements OrderService {
         TickerInfo t = client.getTicker(symbol, settings.getNetwork());
         double price = toDouble(t.getPrice());
         if (price <= 0) {
-            throw new IllegalStateException("Не удалось получить цену для " + symbol + " (price=" + price + ")");
+            log.warn("Не удалось получить цену для {} (price={}) → пропуск MARKET.", symbol, price);
+            return new MarketCtx(0.0, 0.0);
         }
 
         // Балансы
@@ -132,14 +142,17 @@ public class ExchangeOrderServiceImpl implements OrderService {
         double qty = qtyRequested;
         if (side == Order.Side.SELL) {
             if (baseFree <= 0.0) {
-                throw new IllegalStateException("Недостаточно " + base + " для MARKET SELL: доступно 0");
+                log.info("Недостаточно {} для MARKET SELL {}: доступно 0 → пропуск.", base, symbol);
+                return new MarketCtx(0.0, price);
             }
             qty = Math.min(qty, baseFree);
         } else { // BUY
             if (!quote.isBlank()) {
                 double maxByFunds = quoteFree / price;
                 if (maxByFunds <= 0.0) {
-                    throw new IllegalStateException("Недостаточно " + quote + " для MARKET BUY: доступно " + quoteFree);
+                    log.info("Недостаточно {} для MARKET BUY {}: доступно {} → пропуск.",
+                            quote, symbol, format2(quoteFree));
+                    return new MarketCtx(0.0, price);
                 }
                 qty = Math.min(qty, maxByFunds);
             }
@@ -153,15 +166,15 @@ public class ExchangeOrderServiceImpl implements OrderService {
             if (side == Order.Side.BUY) {
                 double maxByFunds = quoteFree / price;
                 if (maxByFunds + 1e-12 < needQty) {
-                    throw new RuntimeException("Недостаточно " + quote +
-                            " для MARKET BUY с min notional " + minNotional + " " + quote +
-                            " (доступно " + format2(quoteFree) + " " + quote + ")");
+                    log.info("Недостаточно {} для MARKET BUY {} с min notional {} {} (доступно {}). Пропуск.",
+                            quote, symbol, format2(minNotional), quote, format2(quoteFree));
+                    return new MarketCtx(0.0, price);
                 }
             } else { // SELL
                 if (baseFree + 1e-12 < needQty) {
-                    throw new RuntimeException("Недостаточно " + base +
-                            " для MARKET SELL с min notional " + minNotional + " " + quote +
-                            " (доступно " + format6(baseFree) + " " + base + ")");
+                    log.info("Недостаточно {} для MARKET SELL {} с min notional {} {} (доступно {}). Пропуск.",
+                            base, symbol, format2(minNotional), quote, format6(baseFree));
+                    return new MarketCtx(0.0, price);
                 }
             }
             qty = Math.max(qty, needQty);
@@ -171,15 +184,17 @@ public class ExchangeOrderServiceImpl implements OrderService {
         qty = roundDown(qty);
 
         if (qty <= 0.0) {
-            throw new RuntimeException("Количество после нормализации стало 0 — пропуск сделки.");
+            log.info("Количество после нормализации стало 0 для {} → пропуск сделки.", symbol);
+            return new MarketCtx(0.0, price);
         }
         if (minNotional > 0 && qty * price + 1e-9 < minNotional) {
-            throw new RuntimeException("Не удаётся выполнить min notional (" + minNotional + " " + quote + ")");
+            log.info("Не удаётся выполнить min notional {} для {} → пропуск MARKET.", format2(minNotional), symbol);
+            return new MarketCtx(0.0, price);
         }
 
         log.info("Нормализовано qty для {} {}: qty={} (price={}, notional={})",
                 side, symbol, format6(qty), format6(price), format2(qty * price));
-        return qty;
+        return new MarketCtx(qty, price);
     }
 
     private static double minNotionalForQuote(String quote) {
@@ -223,6 +238,30 @@ public class ExchangeOrderServiceImpl implements OrderService {
         double executed   = toDouble(resp.getExecutedQty());
         boolean filled    = "FILLED".equals(statusNorm);
 
+        // ✅ Сохраняем LIMIT-ордер в БД — цена берётся из запроса
+        Instant now = Instant.now();
+        try {
+            ExchangeOrderEntity entity = ExchangeOrderEntity.builder()
+                    .chatId(chatId)
+                    .exchange(String.valueOf(settings.getExchange()))
+                    .network(settings.getNetwork())
+                    .orderId(resp.getOrderId())
+                    .symbol(resp.getSymbol())
+                    .side(side.name())
+                    .type("LIMIT")
+                    .price(BigDecimal.valueOf(price))
+                    .quantity(BigDecimal.valueOf(quantity))
+                    .executedQty(resp.getExecutedQty()) // может быть 0/NULL если ещё не исполнился
+                    .status(statusNorm)                 // NEW / PARTIALLY_FILLED / FILLED ...
+                    .createdAt(now)
+                    .updatedAt(now)
+                    .build();
+
+            orderRepo.save(entity);
+        } catch (Exception e) {
+            log.warn("Не удалось сохранить LIMIT-ордер {} в БД: {}", resp.getOrderId(), e.getMessage());
+        }
+
         log.info("Лимитный ордер выставлен: id={}, status={}, executedQty={}", resp.getOrderId(), statusNorm, executed);
 
         return new Order(
@@ -238,21 +277,26 @@ public class ExchangeOrderServiceImpl implements OrderService {
     }
 
     @Override
+    @Transactional
     public Order placeMarket(Long chatId, String symbol, Order.Side side, double quantity) {
         log.info("Рыночный ордер → chatId={}, {} {} qty={}", chatId, side, symbol, quantity);
 
-        ExchangeSettings settings = settingsService.getOrCreate(chatId);
-        ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
-        ExchangeClient   client   = clientFactory.getClient(settings.getExchange());
+        var settings = settingsService.getOrCreate(chatId);
+        var keys     = settingsService.getApiKey(chatId);
+        var client   = clientFactory.getClient(settings.getExchange());
 
-        // 🔧 Нормализуем под баланс / min notional
-        double normQty = precheckAndNormalizeMarket(client, settings, keys, symbol, side, quantity);
+        // нормализуем и получаем референтную цену
+        MarketCtx ctx = precheckAndNormalizeMarket(client, settings, keys, symbol, side, quantity);
+        if (ctx.qty() <= 0.0) {
+            // мягкий пропуск вместо исключения
+            return new Order(null, symbol, side, 0.0, 0.0, false, false, false);
+        }
 
         var req = OrderRequest.builder()
                 .symbol(symbol)
                 .side(side == Order.Side.BUY ? OrderSide.BUY : OrderSide.SELL)
                 .type(com.chicu.aibot.exchange.enums.OrderType.MARKET)
-                .quantity(BigDecimal.valueOf(normQty))
+                .quantity(BigDecimal.valueOf(ctx.qty()))
                 .build();
 
         var resp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
@@ -261,18 +305,34 @@ public class ExchangeOrderServiceImpl implements OrderService {
         double executed   = toDouble(resp.getExecutedQty());
         boolean filled    = "FILLED".equals(statusNorm);
 
+        // ✅ Сохраняем MARKET-ордер в БД — price из референтной цены (тикера), у resp её нет
+        Instant now = Instant.now();
+        try {
+            ExchangeOrderEntity entity = ExchangeOrderEntity.builder()
+                    .chatId(chatId)
+                    .exchange(String.valueOf(settings.getExchange()))
+                    .network(settings.getNetwork())
+                    .orderId(resp.getOrderId())
+                    .symbol(resp.getSymbol())
+                    .side(side.name())
+                    .type("MARKET")
+                    .price(ctx.refPrice() > 0 ? BigDecimal.valueOf(ctx.refPrice()) : null)
+                    .quantity(BigDecimal.valueOf(ctx.qty()))
+                    .executedQty(resp.getExecutedQty())
+                    .status(statusNorm)
+                    .createdAt(now)
+                    .updatedAt(now)
+                    .build();
+
+            orderRepo.save(entity);
+        } catch (Exception e) {
+            log.warn("Не удалось сохранить MARKET-ордер {} в БД: {}", resp.getOrderId(), e.getMessage());
+        }
+
         log.info("Рыночный ордер: id={}, status={}, executedQty={}", resp.getOrderId(), statusNorm, executed);
 
-        return new Order(
-                resp.getOrderId(),
-                resp.getSymbol(),
-                side,
-                0.0,
-                executed,
-                filled,
-                false,
-                false
-        );
+        double uiPrice = ctx.refPrice();
+        return new Order(resp.getOrderId(), resp.getSymbol(), side, uiPrice, executed, filled, false, false);
     }
 
     @Override

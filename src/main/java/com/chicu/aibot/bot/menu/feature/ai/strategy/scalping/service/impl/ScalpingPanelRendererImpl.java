@@ -3,6 +3,8 @@ package com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.impl;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingLiveService;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingPanelRenderer;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.view.LiveSnapshot;
+import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
+import com.chicu.aibot.exchange.order.service.ExchangeOrderDbService;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.service.ScalpingStrategySettingsService;
 import com.chicu.aibot.trading.trade.TradeLogEvent;
@@ -13,8 +15,10 @@ import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
@@ -29,6 +33,9 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
     private final ScalpingLiveService liveService;
     private final TradeLogService tradeLogService;
 
+    // ➕ Новое: подтягиваем ордера прямо из БД
+    private final ExchangeOrderDbService orderDb;
+
     @Override
     public SendMessage render(Long chatId) {
         ScalpingStrategySettings s = settingsService.getOrCreate(chatId);
@@ -37,10 +44,13 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
         LiveSnapshot live = liveService.build(chatId, symbol);
         String pnlBlock   = buildPnlBlock(chatId, symbol, live);
 
-        String openOrdersBlock = live.getOpenOrdersBlock();
-        if (openOrdersBlock == null || openOrdersBlock.isBlank()) {
-            openOrdersBlock = "_нет_";
-        }
+        // 🔧 Открытые ордера теперь формируем из БД
+        List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
+        String openOrdersBlock = openOrders.isEmpty()
+                ? "_нет_"
+                : openOrders.stream().map(this::formatOpenOrder).collect(Collectors.joining("\n"));
+
+        int openCount = openOrders.size();
 
         String text = ("""
                 *📊 Scalping Strategy*
@@ -70,15 +80,15 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 s.isActive() ? "Стратегия: 🟢 *Запущена*" : "Стратегия: 🔴 *Остановлена*",
 
                 symbol,
-                live.getChangeStr(),          // сначала изменение
-                live.getPriceStr(),           // затем цена
+                live.getChangeStr(),
+                live.getPriceStr(),
 
                 live.getBase(),  live.getBaseBal(),
                 live.getQuote(), live.getQuoteBal(),
 
                 pnlBlock,
 
-                live.getOpenCount(),
+                openCount,
                 openOrdersBlock,
 
                 s.getOrderVolume(),
@@ -150,6 +160,22 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
         );
     }
 
+    private String formatOpenOrder(ExchangeOrderEntity e) {
+        String side = e.getSide();
+        String type = e.getType();
+        BigDecimal price = e.getPrice();
+        BigDecimal qty = e.getQuantity();
+        BigDecimal filled = e.getExecutedQty();
+        String status = e.getStatus();
+
+        String priceS = (price == null) ? "MKT" : String.format("%.8f", price);
+        String filledS = (filled == null) ? "0" : filled.stripTrailingZeros().toPlainString();
+        String qtyS = (qty == null) ? "?" : qty.stripTrailingZeros().toPlainString();
+
+        return String.format("• %s %s qty `%s` @ `%s`  filled `%s`  *%s*  (#%s)",
+                side, type, qtyS, priceS, filledS, status, e.getOrderId());
+    }
+
     /** Деньги без знака, знак отображаем эмодзи/отдельно. */
     private static String formatMoneyAbs(double v, String quote) {
         String s = String.format("%,.2f", Math.abs(v));
@@ -157,7 +183,6 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
     }
 
     private static String signedPct(double v) {
-        // красивый знак для процентов: +1.23% / -0.77%
         return String.format("%s%.2f%%", (v >= 0 ? "+" : "-"), Math.abs(v));
     }
 

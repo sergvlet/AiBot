@@ -2,6 +2,7 @@ package com.chicu.aibot.exchange.order.repository;
 
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.enums.NetworkType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -33,4 +34,8 @@ public interface ExchangeOrderRepository extends JpaRepository<ExchangeOrderEnti
                                               @Param("statuses") Collection<String> statuses);
 
     List<ExchangeOrderEntity> findByStatusIn(Collection<String> statuses);
+
+    // ➕ Новое: последние FILLED-сделки (оба направления), с пагинацией
+    List<ExchangeOrderEntity> findByChatIdAndSymbolAndStatusOrderByUpdatedAtDesc(
+            Long chatId, String symbol, String status, Pageable pageable);
 }
