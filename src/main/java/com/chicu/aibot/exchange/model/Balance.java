@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/exchange/model/Balance.java
 package com.chicu.aibot.exchange.model;
 
 import lombok.*;

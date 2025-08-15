@@ -1,4 +1,3 @@
-// com.chicu.aibot.bot.ui.UiEditMessageEvent
 package com.chicu.aibot.bot.ui;
 
 import lombok.Getter;
@@ -11,7 +10,7 @@ public class UiEditMessageEvent {
     private final Integer messageId;
     private final String text;
     private final String parseMode;
-    private final InlineKeyboardMarkup replyMarkup; // NEW
+    private final InlineKeyboardMarkup replyMarkup;
 
     public UiEditMessageEvent(Object source, Long chatId, Integer messageId, String text, String parseMode) {
         this(source, chatId, messageId, text, parseMode, null);

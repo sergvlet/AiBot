@@ -2,7 +2,6 @@ package com.chicu.aibot.strategy.service.impl;
 
 import com.chicu.aibot.exchange.client.ExchangeClient;
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
-import com.chicu.aibot.exchange.enums.NetworkType;
 import com.chicu.aibot.exchange.model.ExchangeApiKey;
 import com.chicu.aibot.exchange.model.ExchangeSettings;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
