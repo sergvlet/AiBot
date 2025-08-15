@@ -73,7 +73,7 @@ public class ScalpingLiveServiceImpl implements ScalpingLiveService {
 
         return LiveSnapshot.builder()
                 .priceStr(priceStr)
-                .changePct(changePct)                // <-- ключевая замена
+                .changePct(changePct)
                 .base(base)
                 .quote(quote)
                 .baseBal(baseBal)
