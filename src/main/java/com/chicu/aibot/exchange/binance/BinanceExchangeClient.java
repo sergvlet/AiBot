@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
@@ -35,6 +36,11 @@ public class BinanceExchangeClient implements ExchangeClient {
     private String testnetBaseUrl;
 
     private static final String RECV_WINDOW = "5000";
+
+    // ==== ДОБАВЛЕНО: авто-синхронизация времени ====
+    private static final long TIME_SYNC_PERIOD_MS = 60_000L; // 1 минута
+    private volatile long timeOffsetMs = 0L;                  // server - local(mid)
+    private volatile long lastSyncAtMs = 0L;
 
     private final RestTemplate rest;
     private final ObjectMapper objectMapper;
@@ -81,6 +87,46 @@ public class BinanceExchangeClient implements ExchangeClient {
 
     private ResponseEntity<String> doDelete(String url, HttpHeaders headers) {
         return rest.exchange(url, HttpMethod.DELETE, new HttpEntity<>((String) null, headers), String.class);
+    }
+
+    // ==== ДОБАВЛЕНО: утилиты времени/ретрая ====
+
+    private void ensureTimeSynced(NetworkType n) {
+        long now = System.currentTimeMillis();
+        if (now - lastSyncAtMs > TIME_SYNC_PERIOD_MS) {
+            syncTime(n);
+        }
+    }
+
+    private synchronized void syncTime(NetworkType n) {
+        try {
+            String url = baseUrl(n) + "/api/v3/time";
+            long t0 = System.currentTimeMillis();
+            ResponseEntity<String> r = rest.getForEntity(url, String.class);
+            long t1 = System.currentTimeMillis();
+
+            long serverTime = parseJson(r.getBody()).path("serverTime").asLong();
+            long localMid = (t0 + t1) / 2L;
+            timeOffsetMs = serverTime - localMid;
+            lastSyncAtMs = System.currentTimeMillis();
+
+            log.info("Binance time sync: offset={} ms (server={}, localMid={})", timeOffsetMs, serverTime, localMid);
+        } catch (Exception e) {
+            log.warn("Binance time sync failed: {}", e.getMessage());
+        }
+    }
+
+    private long nowMs(NetworkType n) {
+        ensureTimeSynced(n);
+        return System.currentTimeMillis() + timeOffsetMs;
+    }
+
+    private static boolean isTimestampError(Throwable e) {
+        if (e instanceof HttpClientErrorException he) {
+            String body = he.getResponseBodyAsString();
+            return body.contains("\"code\":-1021");
+        }
+        return false;
     }
 
     /* ========== filters cache (exchangeInfo) ========== */
@@ -168,16 +214,35 @@ public class BinanceExchangeClient implements ExchangeClient {
 
     private Map<String, BigDecimal> balances(String apiKey, String secretKey, NetworkType n) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(n);
             String q = "recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
             String sig = sign(secretKey, q);
             String url = baseUrl(n) + "/api/v3/account?" + q + "&signature=" + sig;
-            JsonNode acc = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
-            Map<String, BigDecimal> map = new HashMap<>();
-            for (JsonNode b : acc.path("balances")) {
-                map.put(b.path("asset").asText(), new BigDecimal(b.path("free").asText("0")));
+
+            try {
+                JsonNode acc = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                Map<String, BigDecimal> map = new HashMap<>();
+                for (JsonNode b : acc.path("balances")) {
+                    map.put(b.path("asset").asText(), new BigDecimal(b.path("free").asText("0")));
+                }
+                return map;
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("balances(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    q = "recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(n) + "/api/v3/account?" + q + "&signature=" + sig;
+                    JsonNode acc = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                    Map<String, BigDecimal> map = new HashMap<>();
+                    for (JsonNode b : acc.path("balances")) {
+                        map.put(b.path("asset").asText(), new BigDecimal(b.path("free").asText("0")));
+                    }
+                    return map;
+                }
+                throw e;
             }
-            return map;
         } catch (Exception e) {
             log.warn("Binance balances() failed: {}", e.getMessage());
             return Collections.emptyMap();
@@ -189,12 +254,26 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public boolean testConnection(String apiKey, String secretKey, NetworkType networkType) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(networkType);
             String q = "recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
             String sig = sign(secretKey, q);
             String url = baseUrl(networkType) + "/api/v3/account?" + q + "&signature=" + sig;
-            ResponseEntity<String> r = doGet(url, apiKeyHeader(apiKey));
-            return r.getStatusCode().is2xxSuccessful();
+            try {
+                ResponseEntity<String> r = doGet(url, apiKeyHeader(apiKey));
+                return r.getStatusCode().is2xxSuccessful();
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("testConnection(): -1021, resync and retry once");
+                    syncTime(networkType);
+                    ts = nowMs(networkType);
+                    q = "recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(networkType) + "/api/v3/account?" + q + "&signature=" + sig;
+                    ResponseEntity<String> r = doGet(url, apiKeyHeader(apiKey));
+                    return r.getStatusCode().is2xxSuccessful();
+                }
+                throw e;
+            }
         } catch (Exception e) {
             log.warn("Binance testConnection failed: {}", e.getMessage());
             return false;
@@ -204,20 +283,44 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public AccountInfo fetchAccountInfo(String apiKey, String secretKey, NetworkType networkType) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(networkType);
             String q = "recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
             String sig = sign(secretKey, q);
             String url = baseUrl(networkType) + "/api/v3/account?" + q + "&signature=" + sig;
-            JsonNode acc = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
-            List<Balance> list = new ArrayList<>();
-            for (JsonNode b : acc.path("balances")) {
-                list.add(Balance.builder()
-                        .asset(b.path("asset").asText())
-                        .free(new BigDecimal(b.path("free").asText("0")))
-                        .locked(new BigDecimal(b.path("locked").asText("0")))
-                        .build());
+
+            try {
+                JsonNode acc = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                List<Balance> list = new ArrayList<>();
+                for (JsonNode b : acc.path("balances")) {
+                    list.add(Balance.builder()
+                            .asset(b.path("asset").asText())
+                            .free(new BigDecimal(b.path("free").asText("0")))
+                            .locked(new BigDecimal(b.path("locked").asText("0")))
+                            .build());
+                }
+                return AccountInfo.builder().balances(list).build();
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("fetchAccountInfo(): -1021, resync and retry once");
+                    syncTime(networkType);
+                    ts = nowMs(networkType);
+                    q = "recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(networkType) + "/api/v3/account?" + q + "&signature=" + sig;
+
+                    JsonNode acc = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                    List<Balance> list = new ArrayList<>();
+                    for (JsonNode b : acc.path("balances")) {
+                        list.add(Balance.builder()
+                                .asset(b.path("asset").asText())
+                                .free(new BigDecimal(b.path("free").asText("0")))
+                                .locked(new BigDecimal(b.path("locked").asText("0")))
+                                .build());
+                    }
+                    return AccountInfo.builder().balances(list).build();
+                }
+                throw e;
             }
-            return AccountInfo.builder().balances(list).build();
         } catch (Exception e) {
             log.error("Binance fetchAccountInfo failed: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to fetch Binance account info", e);
@@ -253,7 +356,7 @@ public class BinanceExchangeClient implements ExchangeClient {
             BigDecimal baseFree  = bals.getOrDefault(f.baseAsset(), BigDecimal.ZERO);
             BigDecimal quoteFree = bals.getOrDefault(f.quoteAsset(), BigDecimal.ZERO);
 
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(n);
             StringBuilder q = new StringBuilder()
                     .append("symbol=").append(enc(symbol))
                     .append("&side=").append(req.getSide().name())
@@ -264,24 +367,24 @@ public class BinanceExchangeClient implements ExchangeClient {
             switch (req.getType().name()) {
                 case "MARKET" -> {
                     if ("BUY".equals(req.getSide().name())) {
-                        // MARKET BUY: используем quoteOrderQty, не тратим больше свободного quote
+                        // MARKET BUY через quoteOrderQty
                         BigDecimal desiredSpend = (qtyNorm == null || qtyNorm.signum() == 0)
                                 ? quoteFree
                                 : priceEff.multiply(qtyNorm);
-                        BigDecimal spend = desiredSpend.min(quoteFree); // cap по свободным средствам
+                        BigDecimal spend = desiredSpend.min(quoteFree);
                         if (spend.compareTo(minNotional) < 0) {
                             throw new RuntimeException("Pre-check: quote balance below minNotional for MARKET BUY");
                         }
                         q.append("&quoteOrderQty=").append(spend.stripTrailingZeros().toPlainString());
                     } else {
-                        // MARKET SELL: количество не больше свободного base, и не меньше минимально требуемого
+                        // MARKET SELL: qty <= baseFree, и >= min требуемого
                         BigDecimal needQtyNotional = (minNotional.signum() > 0)
                                 ? quantizeUp(minNotional.divide(priceEff, 20, RoundingMode.UP), f.stepSize())
                                 : BigDecimal.ZERO;
                         BigDecimal minRequired = needQtyNotional.max(minQtyEff);
 
                         BigDecimal qty = (qtyNorm == null || qtyNorm.signum() == 0) ? baseFree : qtyNorm;
-                        if (qty.compareTo(baseFree) > 0) qty = baseFree; // ключевая защита
+                        if (qty.compareTo(baseFree) > 0) qty = baseFree;
                         qty = quantizeDown(qty, f.stepSize());
                         if (qty.signum() == 0) {
                             throw new RuntimeException("Pre-check: base balance is zero for MARKET SELL");
@@ -324,16 +427,39 @@ public class BinanceExchangeClient implements ExchangeClient {
 
             String sig = sign(secretKey, q.toString());
             String url = baseUrl(n) + "/api/v3/order";
-            ResponseEntity<String> resp = doPost(url + "?" + q + "&signature=" + sig, apiKeyHeader(apiKey));
-            JsonNode r = parseJson(resp.getBody());
 
-            return OrderResponse.builder()
-                    .orderId(r.path("orderId").asText(null))
-                    .symbol(r.path("symbol").asText(null))
-                    .status(r.path("status").asText(null))
-                    .executedQty(new BigDecimal(r.path("executedQty").asText("0")))
-                    .transactTime(Instant.ofEpochMilli(r.path("transactTime").asLong(System.currentTimeMillis())))
-                    .build();
+            try {
+                ResponseEntity<String> resp = doPost(url + "?" + q + "&signature=" + sig, apiKeyHeader(apiKey));
+                JsonNode r = parseJson(resp.getBody());
+
+                return OrderResponse.builder()
+                        .orderId(r.path("orderId").asText(null))
+                        .symbol(r.path("symbol").asText(null))
+                        .status(r.path("status").asText(null))
+                        .executedQty(new BigDecimal(r.path("executedQty").asText("0")))
+                        .transactTime(Instant.ofEpochMilli(r.path("transactTime").asLong(System.currentTimeMillis())))
+                        .build();
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("placeOrder(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    // пересобираем query с новым timestamp
+                    q = new StringBuilder(q.toString().replaceAll("timestamp=\\d+", "timestamp=" + ts));
+                    sig = sign(secretKey, q.toString());
+                    ResponseEntity<String> resp = doPost(url + "?" + q + "&signature=" + sig, apiKeyHeader(apiKey));
+                    JsonNode r = parseJson(resp.getBody());
+
+                    return OrderResponse.builder()
+                            .orderId(r.path("orderId").asText(null))
+                            .symbol(r.path("symbol").asText(null))
+                            .status(r.path("status").asText(null))
+                            .executedQty(new BigDecimal(r.path("executedQty").asText("0")))
+                            .transactTime(Instant.ofEpochMilli(r.path("transactTime").asLong(System.currentTimeMillis())))
+                            .build();
+                }
+                throw e;
+            }
 
         } catch (RuntimeException ex) {
             log.error("❌ Binance placeOrder pre-check failed: {}", ex.getMessage());
@@ -433,29 +559,58 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<OrderInfo> getOpenOrders(String apiKey, String secretKey, NetworkType n, String symbol) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(n);
             String q = "symbol=" + enc(symbol)
                     + "&recvWindow=" + RECV_WINDOW
                     + "&timestamp=" + ts;
             String sig = sign(secretKey, q);
             String url = baseUrl(n) + "/api/v3/openOrders?" + q + "&signature=" + sig;
 
-            JsonNode arr = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
-            List<OrderInfo> list = new ArrayList<>();
-            if (arr.isArray()) {
-                for (JsonNode o : arr) {
-                    list.add(OrderInfo.builder()
-                            .orderId(o.path("orderId").asText(null))
-                            .symbol(o.path("symbol").asText(null))
-                            .status(o.path("status").asText(null))
-                            .executedQty(new BigDecimal(o.path("executedQty").asText("0")))
-                            .origQty(new BigDecimal(o.path("origQty").asText("0")))
-                            .price(new BigDecimal(o.path("price").asText("0")))
-                            .updateTime(Instant.ofEpochMilli(o.path("updateTime").asLong(0)))
-                            .build());
+            try {
+                JsonNode arr = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                List<OrderInfo> list = new ArrayList<>();
+                if (arr.isArray()) {
+                    for (JsonNode o : arr) {
+                        list.add(OrderInfo.builder()
+                                .orderId(o.path("orderId").asText(null))
+                                .symbol(o.path("symbol").asText(null))
+                                .status(o.path("status").asText(null))
+                                .executedQty(new BigDecimal(o.path("executedQty").asText("0")))
+                                .origQty(new BigDecimal(o.path("origQty").asText("0")))
+                                .price(new BigDecimal(o.path("price").asText("0")))
+                                .updateTime(Instant.ofEpochMilli(o.path("updateTime").asLong(0)))
+                                .build());
+                    }
                 }
+                return list;
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("getOpenOrders(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    q = "symbol=" + enc(symbol) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(n) + "/api/v3/openOrders?" + q + "&signature=" + sig;
+
+                    JsonNode arr = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                    List<OrderInfo> list = new ArrayList<>();
+                    if (arr.isArray()) {
+                        for (JsonNode o : arr) {
+                            list.add(OrderInfo.builder()
+                                    .orderId(o.path("orderId").asText(null))
+                                    .symbol(o.path("symbol").asText(null))
+                                    .status(o.path("status").asText(null))
+                                    .executedQty(new BigDecimal(o.path("executedQty").asText("0")))
+                                    .origQty(new BigDecimal(o.path("origQty").asText("0")))
+                                    .price(new BigDecimal(o.path("price").asText("0")))
+                                    .updateTime(Instant.ofEpochMilli(o.path("updateTime").asLong(0)))
+                                    .build());
+                        }
+                    }
+                    return list;
+                }
+                throw e;
             }
-            return list;
         } catch (Exception e) {
             log.warn("Binance getOpenOrders({}) failed: {}", symbol, e.getMessage());
             return Collections.emptyList();
@@ -465,7 +620,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public OrderInfo getOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(n);
             String q = "symbol=" + enc(symbol)
                     + "&orderId=" + enc(orderId)
                     + "&recvWindow=" + RECV_WINDOW
@@ -473,21 +628,49 @@ public class BinanceExchangeClient implements ExchangeClient {
             String sig = sign(secretKey, q);
             String url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
 
-            JsonNode o = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
-            BigDecimal exec = new BigDecimal(o.path("executedQty").asText("0"));
-            BigDecimal cummQuote = new BigDecimal(o.path("cummulativeQuoteQty").asText("0"));
-            BigDecimal avg = (exec.signum() > 0) ? cummQuote.divide(exec, 20, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+            try {
+                JsonNode o = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                BigDecimal exec = new BigDecimal(o.path("executedQty").asText("0"));
+                BigDecimal cummQuote = new BigDecimal(o.path("cummulativeQuoteQty").asText("0"));
+                BigDecimal avg = (exec.signum() > 0) ? cummQuote.divide(exec, 20, RoundingMode.HALF_UP) : BigDecimal.ZERO;
 
-            return OrderInfo.builder()
-                    .orderId(o.path("orderId").asText(null))
-                    .symbol(o.path("symbol").asText(null))
-                    .status(o.path("status").asText(null))
-                    .executedQty(exec)
-                    .origQty(new BigDecimal(o.path("origQty").asText("0")))
-                    .price(new BigDecimal(o.path("price").asText("0")))
-                    .avgPrice(avg)
-                    .updateTime(Instant.ofEpochMilli(o.path("updateTime").asLong(0)))
-                    .build();
+                return OrderInfo.builder()
+                        .orderId(o.path("orderId").asText(null))
+                        .symbol(o.path("symbol").asText(null))
+                        .status(o.path("status").asText(null))
+                        .executedQty(exec)
+                        .origQty(new BigDecimal(o.path("origQty").asText("0")))
+                        .price(new BigDecimal(o.path("price").asText("0")))
+                        .avgPrice(avg)
+                        .updateTime(Instant.ofEpochMilli(o.path("updateTime").asLong(0)))
+                        .build();
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("getOrder(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    q = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
+
+                    JsonNode o = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                    BigDecimal exec = new BigDecimal(o.path("executedQty").asText("0"));
+                    BigDecimal cummQuote = new BigDecimal(o.path("cummulativeQuoteQty").asText("0"));
+                    BigDecimal avg = (exec.signum() > 0) ? cummQuote.divide(exec, 20, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+
+                    return OrderInfo.builder()
+                            .orderId(o.path("orderId").asText(null))
+                            .symbol(o.path("symbol").asText(null))
+                            .status(o.path("status").asText(null))
+                            .executedQty(exec)
+                            .origQty(new BigDecimal(o.path("origQty").asText("0")))
+                            .price(new BigDecimal(o.path("price").asText("0")))
+                            .avgPrice(avg)
+                            .updateTime(Instant.ofEpochMilli(o.path("updateTime").asLong(0)))
+                            .build();
+                }
+                throw e;
+            }
         } catch (Exception e) {
             log.warn("Binance getOrder({}, {}) failed: {}", symbol, orderId, e.getMessage());
             return null;
@@ -497,15 +680,77 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<OrderInfo> fetchOpenOrders(String apiKey, String secretKey, NetworkType n, String symbol) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(n);
             String q = "symbol=" + enc(symbol) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
             String sig = sign(secretKey, q);
             String url = baseUrl(n) + "/api/v3/openOrders?" + q + "&signature=" + sig;
 
-            JsonNode arr = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
-            List<OrderInfo> out = new ArrayList<>();
-            for (JsonNode j : arr) {
-                out.add(OrderInfo.builder()
+            try {
+                JsonNode arr = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                List<OrderInfo> out = new ArrayList<>();
+                for (JsonNode j : arr) {
+                    out.add(OrderInfo.builder()
+                            .orderId(j.path("orderId").asText())
+                            .symbol(j.path("symbol").asText())
+                            .status(j.path("status").asText())
+                            .side("BUY".equalsIgnoreCase(j.path("side").asText())
+                                    ? com.chicu.aibot.exchange.enums.OrderSide.BUY
+                                    : com.chicu.aibot.exchange.enums.OrderSide.SELL)
+                            .type(com.chicu.aibot.exchange.enums.OrderType.valueOf(j.path("type").asText("LIMIT")))
+                            .price(new BigDecimal(j.path("price").asText("0")))
+                            .origQty(new BigDecimal(j.path("origQty").asText("0")))
+                            .executedQty(new BigDecimal(j.path("executedQty").asText("0")))
+                            .updateTime(Instant.ofEpochMilli(j.path("updateTime").asLong(System.currentTimeMillis())))
+                            .build());
+                }
+                return out;
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("fetchOpenOrders(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    q = "symbol=" + enc(symbol) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(n) + "/api/v3/openOrders?" + q + "&signature=" + sig;
+
+                    JsonNode arr = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                    List<OrderInfo> out = new ArrayList<>();
+                    for (JsonNode j : arr) {
+                        out.add(OrderInfo.builder()
+                                .orderId(j.path("orderId").asText())
+                                .symbol(j.path("symbol").asText())
+                                .status(j.path("status").asText())
+                                .side("BUY".equalsIgnoreCase(j.path("side").asText())
+                                        ? com.chicu.aibot.exchange.enums.OrderSide.BUY
+                                        : com.chicu.aibot.exchange.enums.OrderSide.SELL)
+                                .type(com.chicu.aibot.exchange.enums.OrderType.valueOf(j.path("type").asText("LIMIT")))
+                                .price(new BigDecimal(j.path("price").asText("0")))
+                                .origQty(new BigDecimal(j.path("origQty").asText("0")))
+                                .executedQty(new BigDecimal(j.path("executedQty").asText("0")))
+                                .updateTime(Instant.ofEpochMilli(j.path("updateTime").asLong(System.currentTimeMillis())))
+                                .build());
+                    }
+                    return out;
+                }
+                throw e;
+            }
+        } catch (Exception e) {
+            log.warn("Binance fetchOpenOrders({}) failed: {}", symbol, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    @Override
+    public Optional<OrderInfo> fetchOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
+        try {
+            long ts = nowMs(n);
+            String q = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+            String sig = sign(secretKey, q);
+            String url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
+
+            try {
+                JsonNode j = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                OrderInfo info = OrderInfo.builder()
                         .orderId(j.path("orderId").asText())
                         .symbol(j.path("symbol").asText())
                         .status(j.path("status").asText())
@@ -517,38 +762,35 @@ public class BinanceExchangeClient implements ExchangeClient {
                         .origQty(new BigDecimal(j.path("origQty").asText("0")))
                         .executedQty(new BigDecimal(j.path("executedQty").asText("0")))
                         .updateTime(Instant.ofEpochMilli(j.path("updateTime").asLong(System.currentTimeMillis())))
-                        .build());
+                        .build();
+                return Optional.of(info);
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("fetchOrder(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    q = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
+
+                    JsonNode j = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
+                    OrderInfo info = OrderInfo.builder()
+                            .orderId(j.path("orderId").asText())
+                            .symbol(j.path("symbol").asText())
+                            .status(j.path("status").asText())
+                            .side("BUY".equalsIgnoreCase(j.path("side").asText())
+                                    ? com.chicu.aibot.exchange.enums.OrderSide.BUY
+                                    : com.chicu.aibot.exchange.enums.OrderSide.SELL)
+                            .type(com.chicu.aibot.exchange.enums.OrderType.valueOf(j.path("type").asText("LIMIT")))
+                            .price(new BigDecimal(j.path("price").asText("0")))
+                            .origQty(new BigDecimal(j.path("origQty").asText("0")))
+                            .executedQty(new BigDecimal(j.path("executedQty").asText("0")))
+                            .updateTime(Instant.ofEpochMilli(j.path("updateTime").asLong(System.currentTimeMillis())))
+                            .build();
+                    return Optional.of(info);
+                }
+                throw e;
             }
-            return out;
-        } catch (Exception e) {
-            log.warn("Binance fetchOpenOrders({}) failed: {}", symbol, e.getMessage());
-            return Collections.emptyList();
-        }
-    }
-
-    @Override
-    public Optional<OrderInfo> fetchOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
-        try {
-            long ts = System.currentTimeMillis();
-            String q = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
-            String sig = sign(secretKey, q);
-            String url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
-
-            JsonNode j = parseJson(doGet(url, apiKeyHeader(apiKey)).getBody());
-            OrderInfo info = OrderInfo.builder()
-                    .orderId(j.path("orderId").asText())
-                    .symbol(j.path("symbol").asText())
-                    .status(j.path("status").asText())
-                    .side("BUY".equalsIgnoreCase(j.path("side").asText())
-                            ? com.chicu.aibot.exchange.enums.OrderSide.BUY
-                            : com.chicu.aibot.exchange.enums.OrderSide.SELL)
-                    .type(com.chicu.aibot.exchange.enums.OrderType.valueOf(j.path("type").asText("LIMIT")))
-                    .price(new BigDecimal(j.path("price").asText("0")))
-                    .origQty(new BigDecimal(j.path("origQty").asText("0")))
-                    .executedQty(new BigDecimal(j.path("executedQty").asText("0")))
-                    .updateTime(Instant.ofEpochMilli(j.path("updateTime").asLong(System.currentTimeMillis())))
-                    .build();
-            return Optional.of(info);
         } catch (Exception e) {
             log.warn("Binance fetchOrder({}, {}) failed: {}", symbol, orderId, e.getMessage());
             return Optional.empty();
@@ -558,12 +800,27 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public boolean cancelOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
         try {
-            long ts = System.currentTimeMillis();
+            long ts = nowMs(n);
             String q = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
             String sig = sign(secretKey, q);
             String url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
-            ResponseEntity<String> r = doDelete(url, apiKeyHeader(apiKey));
-            return r.getStatusCode().is2xxSuccessful();
+
+            try {
+                ResponseEntity<String> r = doDelete(url, apiKeyHeader(apiKey));
+                return r.getStatusCode().is2xxSuccessful();
+            } catch (HttpClientErrorException e) {
+                if (isTimestampError(e)) {
+                    log.warn("cancelOrder(): -1021, resync and retry once");
+                    syncTime(n);
+                    ts = nowMs(n);
+                    q = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId) + "&recvWindow=" + RECV_WINDOW + "&timestamp=" + ts;
+                    sig = sign(secretKey, q);
+                    url = baseUrl(n) + "/api/v3/order?" + q + "&signature=" + sig;
+                    ResponseEntity<String> r = doDelete(url, apiKeyHeader(apiKey));
+                    return r.getStatusCode().is2xxSuccessful();
+                }
+                throw e;
+            }
         } catch (Exception e) {
             log.warn("Binance cancelOrder({}, {}) failed: {}", symbol, orderId, e.getMessage());
             return false;

@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/exchange/enums/OrderType.java
 package com.chicu.aibot.exchange.enums;
 
 public enum OrderType {

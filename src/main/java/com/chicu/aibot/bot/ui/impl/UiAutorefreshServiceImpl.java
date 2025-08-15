@@ -22,8 +22,8 @@ import java.util.concurrent.*;
 public class UiAutorefreshServiceImpl implements UiAutorefreshService {
 
     private final MenuSessionService sessionService;
-    private final ScalpingPanelRenderer scalpingPanel; // рендерим контент
-    private final ApplicationEventPublisher events;    // публикуем событие, телеграм дергает листенер
+    private final ScalpingPanelRenderer scalpingPanel;
+    private final ApplicationEventPublisher events;
 
     private ScheduledThreadPoolExecutor pool;
     private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
@@ -59,7 +59,6 @@ public class UiAutorefreshServiceImpl implements UiAutorefreshService {
         log.info("UI autorefresh disabled for {}:{}", chatId, panelName);
     }
 
-    // com.chicu.aibot.bot.ui.impl.UiAutorefreshServiceImpl
     private void safeRefresh(Long chatId, String panelName) {
         try {
             Integer msgId = sessionService.getMenuMessageId(chatId);
