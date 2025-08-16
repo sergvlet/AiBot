@@ -3,6 +3,7 @@ package com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.impl;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingLiveService;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingPanelRenderer;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.view.LiveSnapshot;
+import com.chicu.aibot.bot.ui.AdaptiveKeyboard;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.service.ExchangeOrderDbService;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
@@ -16,7 +17,6 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -28,12 +28,11 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
     public static final String BTN_REFRESH     = "scalp_refresh";
     public static final String BTN_EDIT_SYMBOL = "edit_symbol";
     public static final String BTN_TOGGLE      = "scalp_toggle_active";
+    public static final String BTN_HELP        = "scalp_help"; // новая справка
 
     private final ScalpingStrategySettingsService settingsService;
     private final ScalpingLiveService liveService;
     private final TradeLogService tradeLogService;
-
-    // ➕ Новое: подтягиваем ордера прямо из БД
     private final ExchangeOrderDbService orderDb;
 
     @Override
@@ -44,7 +43,6 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
         LiveSnapshot live = liveService.build(chatId, symbol);
         String pnlBlock   = buildPnlBlock(chatId, symbol, live);
 
-        // 🔧 Открытые ордера теперь формируем из БД
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = openOrders.isEmpty()
                 ? "_нет_"
@@ -102,20 +100,40 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
         );
 
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>(List.of(
-                List.of(button("⟳ Обновить", BTN_REFRESH), button("‹ Назад", "ai_trading")),
-                List.of(button("✏️ Пара", BTN_EDIT_SYMBOL), button("✏️ Объем", "scalp_edit_orderVolume"), button("✏️ История", "scalp_edit_cachedCandlesLimit")),
-                List.of(button("✏️ Окно", "scalp_edit_windowSize"), button("✏️ ΔЦены", "scalp_edit_priceChangeThreshold"), button("✏️ Макс. спред", "scalp_edit_spreadThreshold")),
-                List.of(button("✏️ TP", "scalp_edit_takeProfitPct"), button("✏️ SL", "scalp_edit_stopLossPct")),
-                List.of(button(s.isActive() ? "🛑 Остановить стратегию" : "▶️ Запустить стратегию", BTN_TOGGLE))
-        ));
+        // ——— КНОПКИ (группами; порядок сохранён, тексты переименованы) ———
+        List<InlineKeyboardButton> g1 = List.of(
+                button("ℹ️ Описание стратегии", BTN_HELP),
+                button("⏱ Обновить", BTN_REFRESH)
+        );
+        List<InlineKeyboardButton> g2 = List.of(
+                button("🎯 Символ", BTN_EDIT_SYMBOL),
+                button("⏱ Таймфрейм", "scalp_edit_timeframe"),          // ← ДОБАВЛЕНО
+                button("💰 Объём сделки, %", "scalp_edit_orderVolume"),
+                button("📋 История", "scalp_edit_cachedCandlesLimit")
+        );
+        List<InlineKeyboardButton> g3 = List.of(
+                button("🪟 Окно", "scalp_edit_windowSize"),
+                button("⚡ Триггер входа, %", "scalp_edit_priceChangeThreshold"),
+                button("↔️ Макс. спред, %", "scalp_edit_spreadThreshold")
+        );
+        List<InlineKeyboardButton> g4 = List.of(
+                button("🎯 Тейк-профит, %", "scalp_edit_takeProfitPct"),
+                button("🛡 Стоп-лосс, %", "scalp_edit_stopLossPct")
+        );
+        List<InlineKeyboardButton> g5 = List.of(
+                button("▶️ Стратегия: ВКЛ/ВЫКЛ", BTN_TOGGLE),
+                button("‹ Назад", "ai_trading")
+        );
+
+        // адаптивная раскладка через общую утилиту
+        InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(g1, g2, g3, g4, g5));
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
                 .text(text)
                 .parseMode("Markdown")
                 .disableWebPagePreview(true)
-                .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
+                .replyMarkup(markup)
                 .build();
     }
 
@@ -176,7 +194,6 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 side, type, qtyS, priceS, filledS, status, e.getOrderId());
     }
 
-    /** Деньги без знака, знак отображаем эмодзи/отдельно. */
     private static String formatMoneyAbs(double v, String quote) {
         String s = String.format("%,.2f", Math.abs(v));
         return s + " " + quote;

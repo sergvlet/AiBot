@@ -16,6 +16,7 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
+import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
 
@@ -37,19 +38,18 @@ public class AiSelectSymbolState implements MenuState {
     private static final String KEY_SVC      = "symbol_strategy";
 
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public SendMessage render(Long chatId) {
+        // Привяжем сервис стратегии по returnState, если ещё не привязали
         if (sessionService.getAttribute(chatId, KEY_SVC) == null) {
             String from = sessionService.getReturnState(chatId);
             symbolServices.entrySet().stream()
-                .filter(e -> e.getValue().getReturnState().equals(from))
-                .map(Map.Entry::getKey)
-                .findFirst()
-                .ifPresent(key -> sessionService.setAttribute(chatId, KEY_SVC, key));
+                    .filter(e -> Objects.equals(e.getValue().getReturnState(), from))
+                    .map(Map.Entry::getKey)
+                    .findFirst()
+                    .ifPresent(key -> sessionService.setAttribute(chatId, KEY_SVC, key));
         }
 
         List<String> all      = sessionService.getAttribute(chatId, KEY_LIST);
@@ -64,143 +64,137 @@ public class AiSelectSymbolState implements MenuState {
 
     private SendMessage renderMenu(Long chatId) {
         String back = sessionService.getReturnState(chatId);
-        if (back == null) back = "ai_trading";
+        if (back == null || back.isBlank()) back = "ai_trading";
 
         String text = "*Выбор торговой пары*\n\nВыберите категорию или «Назад»:";
         List<List<InlineKeyboardButton>> rows = List.of(
-            List.of(
-                button("🔥 Популярные",    "symbol_popular"),
-                button("📈 Лидеры роста",  "symbol_gainers")
-            ),
-            List.of(
-                button("📉 Лидеры падения","symbol_losers"),
-                button("💰 По объёму",     "symbol_volume")
-            ),
-            List.of(
-                button("‹ Назад", back)
-            )
+                List.of(
+                        button("🔥 Популярные",    "symbol_popular"),
+                        button("📈 Лидеры роста",  "symbol_gainers")
+                ),
+                List.of(
+                        button("📉 Лидеры падения","symbol_losers"),
+                        button("💰 По объёму",     "symbol_volume")
+                ),
+                List.of(
+                        button("‹ Назад", back)
+                )
         );
 
         return SendMessage.builder()
-            .chatId(chatId.toString())
-            .text(text)
-            .parseMode("Markdown")
-            .replyMarkup(new InlineKeyboardMarkup(rows))
-            .build();
+                .chatId(chatId.toString())
+                .text(text)
+                .parseMode("Markdown")
+                .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
+                .build();
     }
 
-    private SendMessage renderPage(Long chatId,
-                                   List<String> all,
-                                   int page,
-                                   String category) {
+    private SendMessage renderPage(Long chatId, List<String> all, int page, String category) {
         ExchangeSettings ex     = settingsService.getOrCreate(chatId);
         ExchangeClient   client = clientFactory.getClient(ex.getExchange());
         NetworkType      net    = ex.getNetwork();
 
-        int total = all.size();
-        int from  = (page - 1) * PAGE_SIZE;
-        int to    = Math.min(from + PAGE_SIZE, total);
+        int total   = all.size();
+        int maxPage = Math.max(1, (int) Math.ceil(total / (double) PAGE_SIZE));
+        int curPage = Math.min(Math.max(1, page), maxPage);
+
+        int from = (curPage - 1) * PAGE_SIZE;
+        int to   = Math.min(from + PAGE_SIZE, total);
         List<String> slice = all.subList(from, to);
 
-        // 1) Заголовок
         String catLabel = switch (category) {
             case "symbol_popular" -> "Популярные";
             case "symbol_gainers" -> "Лидеры роста";
             case "symbol_losers"  -> "Лидеры падения";
             case "symbol_volume"  -> "По объёму";
-            default               -> "";
+            default               -> "—";
         };
+
         StringBuilder text = new StringBuilder();
         text.append(String.format("*Категория: %s*\nПары %d–%d из %d\n\n",
-                catLabel, from + 1, to, total));
+                catLabel, total == 0 ? 0 : from + 1, to, total));
 
-        // 2) Собираем строки вида "SYMBOL: PRICE ARROW PCT%"
         List<String> lines = new ArrayList<>();
         for (String sym : slice) {
-            TickerInfo info;
             try {
-                info = client.getTicker(sym, net);
-            } catch (RuntimeException e) {
-                // пропускаем если не удалось
-                continue;
+                TickerInfo info = client.getTicker(sym, net);
+                if (info == null || info.getPrice() == null || info.getChangePct() == null) continue;
+
+                BigDecimal price = info.getPrice().setScale(2, RoundingMode.HALF_UP);
+                BigDecimal pct   = info.getChangePct().setScale(2, RoundingMode.HALF_UP);
+                String arrow = pct.signum() >= 0 ? "↑" : "↓";
+
+                lines.add(String.format("%s: %s %s%% %s", sym, price.toPlainString(), pct.toPlainString(), arrow));
+            } catch (RuntimeException ignore) {
+                // пропускаем проблемные символы
             }
-            if (info == null) continue;
-
-            String price = info.getPrice()
-                    .setScale(2, RoundingMode.HALF_UP)
-                    .toPlainString();
-            String pct   = info.getChangePct()
-                    .setScale(2, RoundingMode.HALF_UP)
-                    .toPlainString();
-            // цветные стрелки
-            String arrow = info.getChangePct().signum() >= 0
-                    ? "↑"
-                    : "↓";
-
-            lines.add(String.format("%s: %s %s%% %s", sym, price, pct, arrow));
         }
 
-        // 3) Выводим по две записи в строку
         for (int i = 0; i < lines.size(); i += 2) {
             if (i + 1 < lines.size()) {
-                text.append(lines.get(i))
-                        .append("    ")
-                        .append(lines.get(i + 1))
-                        .append("\n");
+                text.append(lines.get(i)).append("    ").append(lines.get(i + 1)).append("\n");
             } else {
                 text.append(lines.get(i)).append("\n");
             }
         }
+        if (lines.isEmpty()) text.append("_Нет данных для показа по этой категории._\n");
 
-        // 4) Кнопки — по четыре символа в ряд
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         for (int i = 0; i < slice.size(); i += 4) {
             List<InlineKeyboardButton> row = new ArrayList<>();
             for (String sym : slice.subList(i, Math.min(i + 4, slice.size()))) {
                 row.add(button(sym, "symbol_select_" + sym));
             }
-            rows.add(row);
+            if (!row.isEmpty()) rows.add(row);
         }
 
-        // 5) Навигация
         List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (page > 1)   nav.add(button("‹ Назад", "symbol_page_" + (page - 1)));
-        if (to < total) nav.add(button("› Далее", "symbol_page_" + (page + 1)));
-        rows.add(nav);
+        if (curPage > 1)        nav.add(button("‹ Назад", "symbol_page_" + (curPage - 1)));
+        if (to < total)         nav.add(button("› Далее", "symbol_page_" + (curPage + 1)));
+        if (!nav.isEmpty())     rows.add(nav);
 
-        // 6) Кнопка возврата в меню категорий
         rows.add(List.of(button("‹ Категории", NAME)));
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
                 .text(text.toString())
                 .parseMode("Markdown")
-                .replyMarkup(new InlineKeyboardMarkup(rows))
+                .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
                 .build();
     }
-
-
 
     @Override
     public String handleInput(Update update) {
         String data   = update.getCallbackQuery().getData();
         Long   chatId = update.getCallbackQuery().getMessage().getChatId();
 
+        // 0) Если это «возврат» в состояние, откуда пришли (например, ai_trading_scalping_config) — отдадим управление туда
+        String backState = sessionService.getReturnState(chatId);
+        if (backState != null && backState.equals(data)) {
+            clearSessionAttrs(chatId, /*keepSvc*/ false);
+            return backState;
+        }
+
         String svcKey = sessionService.getAttribute(chatId, KEY_SVC);
         SymbolSettingsService symbolSvc = symbolServices.get(svcKey);
         if (symbolSvc == null) {
-            log.error("SymbolSettingsService для '{}' не найден, возвращаем меню", svcKey);
-            return sessionService.getReturnState(chatId);
+            String fallback = backState;
+            if (fallback == null || fallback.isBlank()) fallback = "ai_trading";
+            log.error("SymbolSettingsService для '{}' не найден, возвращаем '{}'", svcKey, fallback);
+            clearSessionAttrs(chatId, /*keepSvc*/ false);
+            return fallback;
         }
 
         // 1) Выбрали категорию
         if (data.startsWith("symbol_")
             && !data.startsWith("symbol_page_")
-            && !data.startsWith("symbol_select_"))
-        {
+            && !data.startsWith("symbol_select_")) {
+
             sessionService.setAttribute(chatId, KEY_CATEGORY, data);
+
             ExchangeSettings ex     = settingsService.getOrCreate(chatId);
             ExchangeClient   client = clientFactory.getClient(ex.getExchange());
+
             List<String> all = switch (data) {
                 case "symbol_popular" -> client.fetchPopularSymbols();
                 case "symbol_gainers" -> client.fetchGainers();
@@ -208,6 +202,7 @@ public class AiSelectSymbolState implements MenuState {
                 case "symbol_volume"  -> client.fetchByVolume();
                 default               -> Collections.emptyList();
             };
+
             sessionService.setAttribute(chatId, KEY_LIST, all);
             sessionService.setAttribute(chatId, KEY_PAGE, 1);
             return NAME;
@@ -215,8 +210,10 @@ public class AiSelectSymbolState implements MenuState {
 
         // 2) Пагинация
         if (data.startsWith("symbol_page_")) {
-            int page = Integer.parseInt(data.substring("symbol_page_".length()));
-            sessionService.setAttribute(chatId, KEY_PAGE, page);
+            try {
+                int page = Integer.parseInt(data.substring("symbol_page_".length()));
+                sessionService.setAttribute(chatId, KEY_PAGE, Math.max(1, page));
+            } catch (NumberFormatException ignore) {}
             return NAME;
         }
 
@@ -225,30 +222,29 @@ public class AiSelectSymbolState implements MenuState {
             String symbol = data.substring("symbol_select_".length());
             Object settings = symbolSvc.getOrCreate(chatId);
             symbolSvc.saveSymbol(chatId, settings, symbol);
-            // очищаем
-            sessionService.removeAttribute(chatId, KEY_LIST);
-            sessionService.removeAttribute(chatId, KEY_PAGE);
-            sessionService.removeAttribute(chatId, KEY_CATEGORY);
-            sessionService.removeAttribute(chatId, KEY_SVC);
+
+            clearSessionAttrs(chatId, /*keepSvc*/ false);
             return symbolSvc.getReturnState();
         }
 
-        // 4) Вернуться в меню категорий
+        // 4) Вернуться в меню категорий этого экрана
         if (NAME.equals(data)) {
-            sessionService.removeAttribute(chatId, KEY_LIST);
-            sessionService.removeAttribute(chatId, KEY_PAGE);
-            sessionService.removeAttribute(chatId, KEY_CATEGORY);
-            // KEY_SVC оставляем, чтобы при повторном заходе помнить стратегию
+            clearSessionAttrs(chatId, /*keepSvc*/ true); // стратегию помним
             return NAME;
         }
 
-        return NAME;
+        // 5) Любой иной колбэк (если вдруг положили сюда кнопку с именем состояния) — передаём дальше фреймворку
+        return !data.isBlank() ? data : NAME;
+    }
+
+    private void clearSessionAttrs(Long chatId, boolean keepSvc) {
+        sessionService.removeAttribute(chatId, KEY_LIST);
+        sessionService.removeAttribute(chatId, KEY_PAGE);
+        sessionService.removeAttribute(chatId, KEY_CATEGORY);
+        if (!keepSvc) sessionService.removeAttribute(chatId, KEY_SVC);
     }
 
     private InlineKeyboardButton button(String text, String data) {
-        return InlineKeyboardButton.builder()
-            .text(text)
-            .callbackData(data)
-            .build();
+        return InlineKeyboardButton.builder().text(text).callbackData(data).build();
     }
 }

@@ -63,9 +63,8 @@ public class AiSelectStrategyState implements MenuState {
                 .chatId(chatId.toString())
                 .parseMode("Markdown")
                 .text("""
-                    *Выбор стратегий AI*
-                                            
-                    Нажмите на стратегию, чтобы перейти к её настройке и запуску/остановке.""")
+                        *Выбор стратегий AI \s
+                        Нажмите на стратегию, чтобы перейти к её настройке и запуску/остановке.""")
                 .replyMarkup(new InlineKeyboardMarkup(rows))
                 .build();
     }
@@ -80,6 +79,6 @@ public class AiSelectStrategyState implements MenuState {
         if ("ai_trading".equals(data)) {
             return "ai_trading";
         }
-        return data; // т.к. callbackData мы задали как имя нужного состояния-конфига
+        return data;
     }
 }
