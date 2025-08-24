@@ -2,7 +2,7 @@ package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.AiSelectStrategyState;
+import com.chicu.aibot.bot.menu.feature.common.AiSelectSymbolState;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
 import lombok.RequiredArgsConstructor;
@@ -12,72 +12,59 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 @Component
 @RequiredArgsConstructor
 public class FibonacciGridAdjustState implements MenuState {
+
     public static final String NAME = "ai_trading_fibonacci_adjust";
 
-    private final FibonacciGridStrategySettingsService service;
+    private final FibonacciGridStrategySettingsService settingsService;
     private final MenuSessionService sessionService;
-    private final AiSelectStrategyState selectStrategyState;
 
-    /** Метаданные: label, описание и шаг */
+    // шаги подобраны под реальные требования
     private static final Map<String, FieldMeta> META = Map.ofEntries(
-            Map.entry("symbol",             new FieldMeta("Символ",     "Торговый символ, например BTCUSDT", null)),
-            Map.entry("levels",             new FieldMeta("Уровни",      "Список уровней Фибоначчи",          null)),
-            Map.entry("gridSizePct",        new FieldMeta("Шаг сетки",   "Расстояние между ордерами в %",     0.1)),
-            Map.entry("orderVolume",        new FieldMeta("Объём",       "Количество актива в ордере",        1.0)),
-            Map.entry("maxActiveOrders",    new FieldMeta("Макс. ордеров", "Максимум открытых ордеров",       1.0)),
-            Map.entry("takeProfitPct",      new FieldMeta("Take-Profit", "Фиксация профита, % от цены",       0.5)),
-            Map.entry("stopLossPct",        new FieldMeta("Stop-Loss",   "Лимит убытка, % от цены",           0.5)),
-            Map.entry("allowShort",         new FieldMeta("Шорт?",       "Можно открывать короткие позиции?",  null)),
-            Map.entry("allowLong",          new FieldMeta("Лонг?",       "Можно открывать длинные позиции?",   null)),
-            Map.entry("timeframe",          new FieldMeta("Таймфрейм",   "Интервал свечей, напр. 1h",         null)),
-            Map.entry("cachedCandlesLimit", new FieldMeta("История",     "Кол-во свечей для анализа",         10.0))
+            Map.entry("symbol",             new FieldMeta("Символ", "Торговая пара, например ETHUSDT", null)),
+            Map.entry("orderVolume",        new FieldMeta("Объём ордера", "Размер рыночного/лимитного ордера (в базовой валюте)", 0.10)),
+            Map.entry("gridSizePct",        new FieldMeta("Шаг сетки, %", "Процентное расстояние между уровнями сетки", 0.05)),
+            Map.entry("maxActiveOrders",    new FieldMeta("Макс. активных ордеров", "Ограничение по одновременно стоящим заявкам", 1.0)),
+            Map.entry("takeProfitPct",      new FieldMeta("TP, %", "Процент фиксации прибыли по уровню", 0.25)),
+            Map.entry("stopLossPct",        new FieldMeta("SL, %", "Процент ограничения убытка", 0.10)),
+            Map.entry("timeframe",          new FieldMeta("Таймфрейм", "Интервал свечей/обновления (быстрый выбор ниже)", null)),
+            Map.entry("cachedCandlesLimit", new FieldMeta("История", "Количество свечей для анализа", 10.0))
     );
 
+    private static final String[] TF_SECONDS = {"1s","3s","5s","10s","15s","30s"};
+    private static final String[] TF_MINUTES = {"1m","3m","5m","15m","30m"};
+    private static final String[] TF_HOURS   = {"1h","2h","4h","6h","8h","12h"};
+    private static final String[] TF_DWM     = {"1d","3d","1w","1M"};
+
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public SendMessage render(Long chatId) {
         String field = sessionService.getEditingField(chatId);
-        // 1) Если непонятно, что редактировать — возвращаем список стратегий
         if (field == null || !META.containsKey(field)) {
             sessionService.clearEditingField(chatId);
-            return selectStrategyState.render(chatId);
+            // вернёмся на экран конфигурации
+            return SendMessage.builder()
+                    .chatId(chatId.toString())
+                    .text("Нечего редактировать.")
+                    .build();
         }
 
-        FibonacciGridStrategySettings s = service.getOrCreate(chatId);
-        FieldMeta meta = META.get(field);
-        String current = getValueAsString(s, field);
-
-        // «-» / «+»
-        List<InlineKeyboardButton> adjustButtons = List.of(
-                InlineKeyboardButton.builder().text("➖").callbackData("fibo_dec:" + field).build(),
-                InlineKeyboardButton.builder().text("➕").callbackData("fibo_inc:" + field).build()
-        );
-        // Кнопка «Назад»
-        InlineKeyboardButton back = InlineKeyboardButton.builder()
-                .text("‹ Назад")
-                .callbackData("ai_trading_fibonacci_config")
-                .build();
-
-        InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder()
-                .keyboard(List.of(
-                        adjustButtons,
-                        List.of(back)
-                ))
-                .build();
+        FibonacciGridStrategySettings s = settingsService.getOrCreate(chatId);
+        FieldMeta meta   = META.get(field);
+        String current   = getValueAsString(s, field);
+        InlineKeyboardMarkup markup = buildKeyboard(field, meta, s);
 
         String text = String.format(
                 "*%s*\n\n%s\n\nТекущее значение: `%s`",
-                meta.label, meta.description, current
+                meta.label(), meta.description(), current
         );
 
         return SendMessage.builder()
@@ -88,26 +75,75 @@ public class FibonacciGridAdjustState implements MenuState {
                 .build();
     }
 
+    private InlineKeyboardMarkup buildKeyboard(String field, FieldMeta meta, FibonacciGridStrategySettings s) {
+        InlineKeyboardMarkup.InlineKeyboardMarkupBuilder b = InlineKeyboardMarkup.builder();
+
+        if ("timeframe".equals(field)) {
+            addTfRow(b, TF_SECONDS, s.getTimeframe());
+            addTfRow(b, TF_MINUTES, s.getTimeframe());
+            addTfRow(b, TF_HOURS,   s.getTimeframe());
+            addTfRow(b, TF_DWM,     s.getTimeframe());
+        } else if (meta.step() != null) {
+            b.keyboardRow(List.of(
+                    InlineKeyboardButton.builder().text("➖").callbackData("fib_dec:" + field).build(),
+                    InlineKeyboardButton.builder().text("➕").callbackData("fib_inc:" + field).build()
+            ));
+        } else {
+            if ("symbol".equals(field)) {
+                b.keyboardRow(List.of(
+                        InlineKeyboardButton.builder().text("🎯 Выбрать символ…").callbackData("fib_edit_symbol_go").build()
+                ));
+            }
+        }
+
+        b.keyboardRow(List.of(
+                InlineKeyboardButton.builder().text("‹ Назад").callbackData(FibonacciGridConfigState.NAME).build()
+        ));
+        return b.build();
+    }
+
+    private void addTfRow(InlineKeyboardMarkup.InlineKeyboardMarkupBuilder b, String[] values, String current) {
+        List<InlineKeyboardButton> row = new ArrayList<>(values.length);
+        for (String tf : values) {
+            String title = tf.equalsIgnoreCase(current) ? ("✅ " + tf) : tf;
+            row.add(InlineKeyboardButton.builder().text(title).callbackData("fib_tf:" + tf).build());
+        }
+        b.keyboardRow(row);
+    }
+
     @Override
     public String handleInput(Update update) {
-        var cq = update.getCallbackQuery();
-        String data   = cq.getData();
-        Long   chatId = cq.getMessage().getChatId();
+        if (update == null || !update.hasCallbackQuery()) return NAME;
+        String data  = update.getCallbackQuery().getData();
+        Long chatId  = update.getCallbackQuery().getMessage().getChatId();
 
-        // Инкремент / декремент
-        if (data.startsWith("fibo_inc:") || data.startsWith("fibo_dec:")) {
-            String[] parts = data.split(":", 2);
-            String action = parts[0].endsWith("inc") ? "inc" : "dec";
-            String field  = parts[1];
+        if ("fib_edit_symbol_go".equals(data)) {
+            sessionService.setEditingField(chatId, "symbol");
+            sessionService.setReturnState(chatId, FibonacciGridConfigState.NAME);
+            return AiSelectSymbolState.NAME;
+        }
 
-            FibonacciGridStrategySettings s = service.getOrCreate(chatId);
-            adjustField(s, field, action);
-            service.save(s);
+        if (data.startsWith("fib_tf:")) {
+            String tf = data.substring("fib_tf:".length());
+            FibonacciGridStrategySettings s = settingsService.getOrCreate(chatId);
+            s.setTimeframe(tf);
+            settingsService.save(s);
+            sessionService.setEditingField(chatId, "timeframe");
             return NAME;
         }
 
-        // Назад в меню конфигурации
-        if ("ai_trading_fibonacci_config".equals(data)) {
+        if (data.startsWith("fib_inc:") || data.startsWith("fib_dec:")) {
+            String field  = data.substring(data.indexOf(':') + 1);
+            String action = data.startsWith("fib_inc:") ? "inc" : "dec";
+            if (!META.containsKey(field)) return NAME;
+
+            FibonacciGridStrategySettings s = settingsService.getOrCreate(chatId);
+            adjustField(s, field, action);
+            settingsService.save(s);
+            return NAME;
+        }
+
+        if (FibonacciGridConfigState.NAME.equals(data)) {
             sessionService.clearEditingField(chatId);
             return FibonacciGridConfigState.NAME;
         }
@@ -115,52 +151,60 @@ public class FibonacciGridAdjustState implements MenuState {
         return NAME;
     }
 
-
     private String getValueAsString(FibonacciGridStrategySettings s, String field) {
         return switch (field) {
-            case "symbol"             -> s.getSymbol();
-            case "gridSizePct"        -> String.format("%.2f%%", s.getGridSizePct());
+            case "symbol"             -> nvl(s.getSymbol());
             case "orderVolume"        -> String.format("%.4f", s.getOrderVolume());
-            case "maxActiveOrders"    -> s.getMaxActiveOrders().toString();
+            case "gridSizePct"        -> String.format("%.4f%%", s.getGridSizePct());
+            case "maxActiveOrders"    -> s.getMaxActiveOrders() == null ? "" : s.getMaxActiveOrders().toString();
             case "takeProfitPct"      -> String.format("%.2f%%", s.getTakeProfitPct());
             case "stopLossPct"        -> String.format("%.2f%%", s.getStopLossPct());
-            case "allowShort"         -> s.getAllowShort().toString();
-            case "allowLong"          -> s.getAllowLong().toString();
-            case "timeframe"          -> s.getTimeframe();
-            case "cachedCandlesLimit" -> s.getCachedCandlesLimit().toString();
-            default                   -> "";
+            case "timeframe"          -> nvl(s.getTimeframe());
+            case "cachedCandlesLimit" -> s.getCachedCandlesLimit() == null ? "" : s.getCachedCandlesLimit().toString();
+            default -> "";
         };
     }
 
     private void adjustField(FibonacciGridStrategySettings s, String field, String action) {
         FieldMeta meta = META.get(field);
-        if (meta.step == null) {
-            if ("allowShort".equals(field)) s.setAllowShort(!s.getAllowShort());
-            if ("allowLong".equals(field))  s.setAllowLong(!s.getAllowLong());
-            return;
-        }
-        double step = meta.step;
+        if (meta == null || meta.step() == null) return;
+
+        double step = meta.step();
+        double sign = "inc".equals(action) ? 1.0 : -1.0;
+
         switch (field) {
-            case "gridSizePct" ->
-                    s.setGridSizePct(action.equals("inc") ? s.getGridSizePct() + step : s.getGridSizePct() - step);
-            case "orderVolume" ->
-                    s.setOrderVolume(action.equals("inc") ? s.getOrderVolume() + step : s.getOrderVolume() - step);
+            case "orderVolume" -> {
+                double v = s.getOrderVolume() + sign * step;
+                s.setOrderVolume(clampDouble(v, 0.0001, 1_000_000.0));
+            }
+            case "gridSizePct" -> {
+                double v = s.getGridSizePct() + sign * step;
+                s.setGridSizePct(clampDouble(v, 0.0001, 100.0));
+            }
             case "maxActiveOrders" -> {
-                int delta = meta.step.intValue();
-                s.setMaxActiveOrders(action.equals("inc") ?
-                        s.getMaxActiveOrders() + delta : s.getMaxActiveOrders() - delta);
+                int v = safeInt(s.getMaxActiveOrders()) + (int)Math.round(sign * step);
+                s.setMaxActiveOrders(clampInt(v));
             }
-            case "takeProfitPct" ->
-                    s.setTakeProfitPct(action.equals("inc") ? s.getTakeProfitPct() + step : s.getTakeProfitPct() - step);
-            case "stopLossPct" ->
-                    s.setStopLossPct(action.equals("inc") ? s.getStopLossPct() + step : s.getStopLossPct() - step);
+            case "takeProfitPct" -> {
+                double v = s.getTakeProfitPct() + sign * step;
+                s.setTakeProfitPct(clampDouble(v, 0.0, 10_000.0));
+            }
+            case "stopLossPct" -> {
+                double v = s.getStopLossPct() + sign * step;
+                s.setStopLossPct(clampDouble(v, 0.0, 10_000.0));
+            }
             case "cachedCandlesLimit" -> {
-                int delta = meta.step.intValue();
-                s.setCachedCandlesLimit(action.equals("inc") ?
-                        s.getCachedCandlesLimit() + delta : s.getCachedCandlesLimit() - delta);
+                int v = safeInt(s.getCachedCandlesLimit()) + (int)Math.round(sign * step);
+                s.setCachedCandlesLimit(clampInt(v));
             }
+            default -> { /* no-op */ }
         }
     }
+
+    private static int safeInt(Integer v) { return v == null ? 0 : v; }
+    private static int clampInt(int v) { return Math.max(1, Math.min(1000000, v)); }
+    private static double clampDouble(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
+    private static String nvl(String s) { return (s == null || s.isBlank()) ? "—" : s; }
 
     private record FieldMeta(String label, String description, Double step) {}
 }

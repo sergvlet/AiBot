@@ -53,7 +53,7 @@ public class FibonacciGridStrategySettings extends StrategySettings {
     private Integer cachedCandlesLimit;
 
     @Column(name = "active", nullable = false)
-    private boolean active; // ✅ поддержка запуска/остановки
+    private boolean active; // поддержка запуска/остановки
 
     @Version
     private Long version;
@@ -81,5 +81,17 @@ public class FibonacciGridStrategySettings extends StrategySettings {
     @Override
     public void setActive(boolean active) {
         this.active = active;
+    }
+
+    /* ---------- ДОБАВЛЕНО: boolean-геттеры под вызовы isAllowLong()/isAllowShort() ---------- */
+
+    /** Null-safe: трактуем null как false. */
+    public boolean isAllowLong() {
+        return Boolean.TRUE.equals(allowLong);
+    }
+
+    /** Null-safe: трактуем null как false. */
+    public boolean isAllowShort() {
+        return Boolean.TRUE.equals(allowShort);
     }
 }

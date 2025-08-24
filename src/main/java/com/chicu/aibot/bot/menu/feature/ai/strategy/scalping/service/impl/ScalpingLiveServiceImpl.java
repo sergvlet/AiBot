@@ -1,7 +1,7 @@
 package com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.impl;
 
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingLiveService;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.view.LiveSnapshot;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.view.LiveSnapshot;
 import com.chicu.aibot.exchange.client.ExchangeClient;
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
 import com.chicu.aibot.exchange.model.AccountInfo;

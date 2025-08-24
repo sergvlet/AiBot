@@ -32,14 +32,14 @@ public class ScalpingAdjustState implements MenuState {
      */
     private static final Map<String, FieldMeta> META = Map.ofEntries(
             Map.entry("symbol",               new FieldMeta("Символ", "Торговая пара, например BTCUSDT", null)),
-            Map.entry("windowSize",           new FieldMeta("Окно", "Размер окна (кол-во свечей)", 1.0)),
-            Map.entry("priceChangeThreshold", new FieldMeta("Порог движения", "Изменение цены в % для входа", 0.1)),
+            Map.entry("windowSize",           new FieldMeta("Окно", "Размер окна (кол-во свечей)", 5.0)),
+            Map.entry("priceChangeThreshold", new FieldMeta("Порог движения", "Изменение цены в % для входа", 0.05)),
             Map.entry("spreadThreshold",      new FieldMeta("Спред", "Макс. допустимый спред", 0.01)),
-            Map.entry("takeProfitPct",        new FieldMeta("TP", "Take-Profit в %", 0.5)),
-            Map.entry("stopLossPct",          new FieldMeta("SL", "Stop-Loss в %", 0.5)),
-            Map.entry("orderVolume",          new FieldMeta("Объем", "Объем рыночного ордера", 1.0)),
+            Map.entry("takeProfitPct",        new FieldMeta("TP", "Take-Profit в %", 0.05)),
+            Map.entry("stopLossPct",          new FieldMeta("SL", "Stop-Loss в %", 0.05)),
+            Map.entry("orderVolume",          new FieldMeta("Объем", "Объем рыночного ордера", 0.5)),
             Map.entry("timeframe",            new FieldMeta("Таймфрейм", "Интервал обновления/свечей (например 1m). Быстрый выбор ниже.", null)),
-            Map.entry("cachedCandlesLimit",   new FieldMeta("История", "Кол-во свечей для анализа", 10.0))
+            Map.entry("cachedCandlesLimit",   new FieldMeta("История", "Кол-во свечей для анализа", 20.0))
     );
 
     // пресеты таймфрейма

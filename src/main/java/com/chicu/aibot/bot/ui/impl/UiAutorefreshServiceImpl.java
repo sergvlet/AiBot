@@ -1,78 +1,128 @@
 package com.chicu.aibot.bot.ui.impl;
 
+import com.chicu.aibot.bot.menu.core.MenuService;
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingPanelRenderer;
 import com.chicu.aibot.bot.ui.UiAutorefreshService;
 import com.chicu.aibot.bot.ui.UiEditMessageEvent;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Service;
-
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.stereotype.Service;
+import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.*;
 
+/**
+ * Универсальный авто обновлятор UI-панелей.
+ * - Без прямой зависимости от MenuService (через ObjectProvider) — нет цикла бинов.
+ * - Публикует UiEditMessageEvent через стабильный конструктор.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class UiAutorefreshServiceImpl implements UiAutorefreshService {
 
-    private final MenuSessionService sessionService;
-    private final ScalpingPanelRenderer scalpingPanel;
-    private final ApplicationEventPublisher events;
+    private static final long REFRESH_INITIAL_DELAY_MS = 1000L;
+    private static final long REFRESH_PERIOD_MS        = 1000L;
 
-    private ScheduledThreadPoolExecutor pool;
-    private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
+    private final MenuSessionService sessionService;
+    private final ApplicationEventPublisher events;
+    private final ObjectProvider<MenuService> menuServiceProvider;
+
+    private ScheduledExecutorService scheduler;
+
+    /** по одному джобу на чат */
+    private final Map<Long, ScheduledFuture<?>> jobs = new ConcurrentHashMap<>();
+    /** Активная панель на чат (тики чужих панелей игнорируются) */
+    private final Map<Long, String> activePanel = new ConcurrentHashMap<>();
 
     @PostConstruct
     void init() {
-        pool = new ScheduledThreadPoolExecutor(2);
+        ScheduledThreadPoolExecutor pool = new ScheduledThreadPoolExecutor(2);
         pool.setRemoveOnCancelPolicy(true);
+        this.scheduler = pool;
+        log.info("UI autorefresh initialized (period={} ms)", REFRESH_PERIOD_MS);
     }
 
     @PreDestroy
     void stop() {
-        pool.shutdownNow();
+        try {
+            scheduler.shutdownNow();
+        } catch (Exception ignore) {
+        }
     }
 
     @Override
     public void enable(Long chatId, String panelName) {
-        String key = key(chatId, panelName);
-        ScheduledFuture<?> old = tasks.get(key);
-        if (old != null && !old.isCancelled() && !old.isDone()) return;
+        if (chatId == null || panelName == null || panelName.isBlank()) return;
 
-        ScheduledFuture<?> fut = pool.scheduleAtFixedRate(() -> safeRefresh(chatId, panelName),
-                10, 10, TimeUnit.SECONDS);
-        tasks.put(key, fut);
-        log.info("UI autorefresh enabled for {}:{}", chatId, panelName);
+        cancelJob(chatId);
+        activePanel.put(chatId, panelName);
+
+        ScheduledFuture<?> fut = scheduler.scheduleAtFixedRate(
+                () -> safeRefresh(chatId, panelName),
+                REFRESH_INITIAL_DELAY_MS,
+                REFRESH_PERIOD_MS,
+                TimeUnit.MILLISECONDS
+        );
+        jobs.put(chatId, fut);
+        log.debug("UI autorefresh ENABLED chatId={} panel='{}'", chatId, panelName);
     }
 
     @Override
     public void disable(Long chatId, String panelName) {
-        String key = key(chatId, panelName);
-        ScheduledFuture<?> fut = tasks.remove(key);
-        if (fut != null) fut.cancel(true);
-        log.info("UI autorefresh disabled for {}:{}", chatId, panelName);
+        if (chatId == null) return;
+
+        String active = activePanel.get(chatId);
+        if (!Objects.equals(active, panelName)) return; // уже переключились — ничего не делаем
+
+        cancelJob(chatId);
+        activePanel.remove(chatId);
+        log.debug("UI autorefresh DISABLED chatId={} panel='{}'", chatId, panelName);
     }
 
-    private void safeRefresh(Long chatId, String panelName) {
+    private void cancelJob(Long chatId) {
+        ScheduledFuture<?> old = jobs.remove(chatId);
+        if (old != null) old.cancel(true);
+    }
+
+    private void safeRefresh(Long chatId, String expectedPanel) {
         try {
+            // если пользователь ушёл на другую панель — пропускаем тик
+            String current = activePanel.get(chatId);
+            if (!Objects.equals(current, expectedPanel)) return;
+
             Integer msgId = sessionService.getMenuMessageId(chatId);
             if (msgId == null) return;
 
-            var panel = scalpingPanel.render(chatId); // уже содержит и текст, и клавиатуру
-            var text  = panel.getText();
-            var kb    = (InlineKeyboardMarkup) panel.getReplyMarkup();
+            MenuService menuService = menuServiceProvider.getIfAvailable();
+            if (menuService == null) return;
 
-            events.publishEvent(new UiEditMessageEvent(this, chatId, msgId, text, "Markdown", kb));
+            // перерисовываем именно ожидаемую панель
+            SendMessage view = menuService.renderState(expectedPanel, chatId);
+            if (view == null) return;
+
+            String text = view.getText();
+            String parseMode = view.getParseMode() == null ? "Markdown" : view.getParseMode();
+            InlineKeyboardMarkup kb = (InlineKeyboardMarkup) view.getReplyMarkup();
+
+            // публикуем событие (конструктор соответствует UiEventListener)
+            events.publishEvent(new UiEditMessageEvent(
+                    this,
+                    chatId,
+                    msgId,
+                    text,
+                    parseMode,
+                    kb
+            ));
         } catch (Exception e) {
-            log.debug("Autorefresh error {}:{} — {}", chatId, panelName, e.getMessage());
+            log.debug("Autorefresh error {}:{} — {}", chatId, expectedPanel, e.getMessage());
         }
     }
-
-    private static String key(Long chatId, String panelName) { return chatId + ":" + panelName; }
 }

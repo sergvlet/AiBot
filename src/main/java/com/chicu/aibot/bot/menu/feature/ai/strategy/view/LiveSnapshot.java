@@ -1,4 +1,4 @@
-package com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.view;
+package com.chicu.aibot.bot.menu.feature.ai.strategy.view;
 
 import lombok.Builder;
 import lombok.Value;
