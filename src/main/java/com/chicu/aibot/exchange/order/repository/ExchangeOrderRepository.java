@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -30,12 +31,26 @@ public interface ExchangeOrderRepository extends JpaRepository<ExchangeOrderEnti
     List<ExchangeOrderEntity> findOpenByPrice(@Param("chatId") Long chatId,
                                               @Param("symbol") String symbol,
                                               @Param("side") String side,
-                                              @Param("price") java.math.BigDecimal price,
+                                              @Param("price") BigDecimal price,
                                               @Param("statuses") Collection<String> statuses);
 
     List<ExchangeOrderEntity> findByStatusIn(Collection<String> statuses);
 
-    // ➕ Новое: последние FILLED-сделки (оба направления), с пагинацией
+    /** последние FILLED-сделки (с пагинацией) */
     List<ExchangeOrderEntity> findByChatIdAndSymbolAndStatusOrderByUpdatedAtDesc(
             Long chatId, String symbol, String status, Pageable pageable);
+
+    /** первый ордер по времени (открывающий сделку) */
+    ExchangeOrderEntity findFirstByChatIdAndSymbolAndSideOrderByCreatedAtAsc(
+            Long chatId, String symbol, String side
+    );
+
+    /** последний ордер по времени (закрывающий сделку) */
+    ExchangeOrderEntity findFirstByChatIdAndSymbolAndSideOrderByCreatedAtDesc(
+            Long chatId, String symbol, String side
+    );
+
+    /** История сделок по пользователю и символу (по времени) */
+    List<ExchangeOrderEntity> findByChatIdAndSymbolOrderByCreatedAtDesc(Long chatId, String symbol);
+
 }
