@@ -2,10 +2,16 @@ package com.chicu.aibot.trading.scheduler.impl;
 
 import com.chicu.aibot.bot.TelegramBot;
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.bollinger.BollingerConfigState;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.bollinger.service.BollingerPanelRenderer;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.FibonacciGridConfigState;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.service.FibonacciGridPanelRenderer;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.ScalpingConfigState;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingPanelRenderer;
 import com.chicu.aibot.strategy.StrategyRegistry;
 import com.chicu.aibot.strategy.TradingStrategy;
+import com.chicu.aibot.strategy.bollinger.model.BollingerStrategySettings;
+import com.chicu.aibot.strategy.bollinger.repository.BollingerStrategySettingsRepository;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.repository.FibonacciGridStrategySettingsRepository;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
@@ -25,13 +31,12 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 @Slf4j
 @Service
@@ -39,12 +44,18 @@ import java.util.concurrent.atomic.AtomicLong;
 public class SchedulerServiceImpl implements SchedulerService {
 
     private final StrategyRegistry registry;
+
+    // репозитории настроек
     private final ScalpingStrategySettingsRepository scalpingRepo;
     private final FibonacciGridStrategySettingsRepository fibRepo;
+    private final BollingerStrategySettingsRepository bollRepo;
+
+    private final ObjectProvider<ScalpingPanelRenderer> scalpingPanel;
+    private final ObjectProvider<FibonacciGridPanelRenderer> fibPanel;
+    private final ObjectProvider<BollingerPanelRenderer> bollPanel;
 
     private final ObjectProvider<TelegramBot> botProvider;
     private final MenuSessionService sessionService;
-    private final ScalpingPanelRenderer scalpingPanelRenderer;
 
     @Value("${ui.autorefresh.ms:1000}")
     private long uiAutorefreshMs;
@@ -57,10 +68,28 @@ public class SchedulerServiceImpl implements SchedulerService {
     private ScheduledFuture<?> uiRefreshFuture;
 
     private final Set<String> uiAutorefreshDisabled = ConcurrentHashMap.newKeySet();
-
     private final Map<String, String> lastUiPayload = new ConcurrentHashMap<>();
 
     private static final AtomicLong SCHEDULER_THREAD_SEQ = new AtomicLong();
+
+
+    /** Определение таймфрейма по имени стратегии. */
+    private final Map<String, Function<Long, String>> timeframeResolvers = new HashMap<>();
+
+    /** Поставщики chatId’ов активных стратегий для автозапуска. */
+    private final Map<String, Supplier<Stream<Long>>> autostartSuppliers = new HashMap<>();
+
+    /**
+     * Определение UI-панели (рендерера) и имени состояния меню для автообновления.
+     */
+        private record UiMeta(String stateName, Supplier<Optional<? extends PanelRendererAdapter>> renderer) {
+    }
+    /** Небольшой адаптер, чтобы не зависеть от конкретных интерфейсов рендереров. */
+    public interface PanelRendererAdapter {
+        SendMessage render(Long chatId);
+    }
+
+    private final Map<String, UiMeta> uiByStrategy = new HashMap<>();
 
     @PostConstruct
     private void init() {
@@ -74,6 +103,39 @@ public class SchedulerServiceImpl implements SchedulerService {
         this.scheduler.setRemoveOnCancelPolicy(true);
         log.info("Планировщик инициализирован: {} поток(а/ов)", threads);
 
+        timeframeResolvers.put("SCALPING", id ->
+                scalpingRepo.findById(id).orElseThrow(() ->
+                        new IllegalStateException("Scalping settings not found for chatId=" + id)).getTimeframe()
+        );
+        timeframeResolvers.put("FIBONACCI_GRID", id ->
+                fibRepo.findById(id).orElseThrow(() ->
+                        new IllegalStateException("FibonacciGrid settings not found for chatId=" + id)).getTimeframe()
+        );
+        timeframeResolvers.put("BOLLINGER_BANDS", id ->
+                bollRepo.findById(id).orElseThrow(() ->
+                        new IllegalStateException("Bollinger settings not found for chatId=" + id)).getTimeframe()
+        );
+
+        autostartSuppliers.put("SCALPING", () ->
+                scalpingRepo.findAll().stream().filter(ScalpingStrategySettings::isActive).map(ScalpingStrategySettings::getChatId));
+        autostartSuppliers.put("FIBONACCI_GRID", () ->
+                fibRepo.findAll().stream().filter(FibonacciGridStrategySettings::isActive).map(FibonacciGridStrategySettings::getChatId));
+        autostartSuppliers.put("BOLLINGER_BANDS", () ->
+                bollRepo.findAll().stream().filter(BollingerStrategySettings::isActive).map(BollingerStrategySettings::getChatId));
+
+        // ---- UI-автообновление для всех поддержанных стратегий ----
+        uiByStrategy.put("SCALPING",
+                new UiMeta(ScalpingConfigState.NAME,
+                        () -> scalpingPanel.stream().findFirst().map(p -> p::render)));
+
+        uiByStrategy.put("FIBONACCI_GRID",
+                new UiMeta(FibonacciGridConfigState.NAME,
+                        () -> fibPanel.stream().findFirst().map(p -> p::render)));
+
+        uiByStrategy.put("BOLLINGER_BANDS",
+                new UiMeta(BollingerConfigState.NAME,
+                        () -> bollPanel.stream().findFirst().map(p -> p::render)));
+
         startUiAutorefreshIfNeeded();
         startActiveFromDbIfEnabled();
     }
@@ -85,6 +147,8 @@ public class SchedulerServiceImpl implements SchedulerService {
         scheduler.shutdownNow();
         lastUiPayload.clear();
     }
+
+    // ==================== API ====================
 
     @Override
     public void startStrategy(Long chatId, String strategyName) {
@@ -182,6 +246,8 @@ public class SchedulerServiceImpl implements SchedulerService {
         }
     }
 
+    // ==================== внутренности ====================
+
     private ScheduledFuture<?> scheduleLoop(Long chatId, String strategyName, TradingStrategy strategy, long intervalSec) {
         return scheduler.scheduleAtFixedRate(() -> {
             try {
@@ -190,24 +256,15 @@ public class SchedulerServiceImpl implements SchedulerService {
             } catch (Exception e) {
                 log.error("Ошибка onPriceUpdate для {} @{}: {}", strategyName, chatId, e.getMessage(), e);
             }
-        }, 0, intervalSec, java.util.concurrent.TimeUnit.SECONDS);
+        }, 0, intervalSec, TimeUnit.SECONDS);
     }
 
     private long resolveIntervalSec(Long chatId, String strategyName) {
-        String tf;
-        switch (strategyName) {
-            case "SCALPING" -> {
-                ScalpingStrategySettings s = scalpingRepo.findById(chatId)
-                        .orElseThrow(() -> new IllegalStateException("Scalping settings not found for chatId=" + chatId));
-                tf = s.getTimeframe();
-            }
-            case "FIBONACCI_GRID" -> {
-                FibonacciGridStrategySettings f = fibRepo.findById(chatId)
-                        .orElseThrow(() -> new IllegalStateException("FibonacciGrid settings not found for chatId=" + chatId));
-                tf = f.getTimeframe();
-            }
-            default -> throw new IllegalArgumentException("Unknown strategy: " + strategyName);
+        Function<Long, String> resolver = timeframeResolvers.get(strategyName);
+        if (resolver == null) {
+            throw new IllegalArgumentException("Unknown strategy: " + strategyName);
         }
+        String tf = resolver.apply(chatId);
         return parseTimeframe(tf);
     }
 
@@ -237,6 +294,8 @@ public class SchedulerServiceImpl implements SchedulerService {
         return chatId + ":" + strategyName;
     }
 
+    // ===== UI autorefresh для всех стратегий, у которых это уместно =====
+
     private void startUiAutorefreshIfNeeded() {
         if (uiAutorefreshMs <= 0) {
             log.info("UI автообновление отключено (ui.autorefresh.ms={})", uiAutorefreshMs);
@@ -244,7 +303,7 @@ public class SchedulerServiceImpl implements SchedulerService {
         }
         if (uiRefreshFuture == null || uiRefreshFuture.isCancelled() || uiRefreshFuture.isDone()) {
             uiRefreshFuture = scheduler.scheduleAtFixedRate(
-                    this::refreshScalpingPanelsSafe,
+                    this::refreshPanelsSafe,
                     uiAutorefreshMs,
                     uiAutorefreshMs,
                     TimeUnit.MILLISECONDS
@@ -253,33 +312,43 @@ public class SchedulerServiceImpl implements SchedulerService {
         }
     }
 
-    private void refreshScalpingPanelsSafe() {
+    private void refreshPanelsSafe() {
         try {
-            refreshScalpingPanels();
+            refreshPanels();
         } catch (Exception e) {
             log.debug("UI autorefresh tick failed: {}", e.getMessage());
         }
     }
 
-    private void refreshScalpingPanels() {
+    private void refreshPanels() {
         if (runningTasks.isEmpty()) return;
 
         Set<String> keys = Set.copyOf(runningTasks.keySet());
         for (String key : keys) {
-            if (!key.endsWith(":SCALPING")) continue;
+            // key = "<chatId>:<STRATEGY_NAME>"
+            int idx = key.indexOf(':');
+            if (idx <= 0) continue;
+
+            String strategyName = key.substring(idx + 1);
+            UiMeta meta = uiByStrategy.get(strategyName);
+            if (meta == null) continue;
+
             if (uiAutorefreshDisabled.contains(key)) continue;
 
             Long chatId = extractChatId(key);
             if (chatId == null) continue;
 
             String currentState = tryGetCurrentState(chatId);
-            if (!ScalpingConfigState.NAME.equals(currentState)) continue;
+            if (!Objects.equals(meta.stateName, currentState)) continue;
 
             Integer messageId = tryGetLastMessageId(chatId);
             if (messageId == null) continue;
 
+            Optional<? extends PanelRendererAdapter> rendererOpt = meta.renderer.get();
+            if (rendererOpt.isEmpty()) continue;
+
             try {
-                SendMessage sm = scalpingPanelRenderer.render(chatId);
+                SendMessage sm = rendererOpt.get().render(chatId);
 
                 EditMessageText edit = EditMessageText.builder()
                         .chatId(chatId.toString())
@@ -287,7 +356,7 @@ public class SchedulerServiceImpl implements SchedulerService {
                         .text(sm.getText())
                         .parseMode(sm.getParseMode())
                         .disableWebPagePreview(Boolean.TRUE.equals(sm.getDisableWebPagePreview()))
-                        .replyMarkup((InlineKeyboardMarkup) sm.getReplyMarkup()) // оставлено как было: зависит от типа в вашем проекте
+                        .replyMarkup((InlineKeyboardMarkup) sm.getReplyMarkup())
                         .build();
 
                 TelegramBot bot = botProvider.getIfAvailable();
@@ -306,7 +375,6 @@ public class SchedulerServiceImpl implements SchedulerService {
         Integer messageId = edit.getMessageId();
         String key = chatId + ":" + messageId;
 
-        // 👇 лишнее приведение к типу убрано
         String payload = buildPayload(
                 edit.getText(),
                 edit.getReplyMarkup(),
@@ -332,15 +400,14 @@ public class SchedulerServiceImpl implements SchedulerService {
         }
     }
 
-    // 👇 StringBuilder заменён на простую конкатенацию
     private String buildPayload(String text,
                                 InlineKeyboardMarkup markup,
                                 String parseMode,
                                 Boolean disablePreview) {
         return (text == null ? "" : text) + '|'
-                + (parseMode == null ? "" : parseMode) + '|'
-                + Boolean.TRUE.equals(disablePreview) + '|'
-                + (markup == null ? "null" : markup.toString());
+               + (parseMode == null ? "" : parseMode) + '|'
+               + Boolean.TRUE.equals(disablePreview) + '|'
+               + (markup == null ? "null" : markup.toString());
     }
 
     private Long extractChatId(String key) {
@@ -381,16 +448,16 @@ public class SchedulerServiceImpl implements SchedulerService {
 
     private void startActiveFromDbIfEnabled() {
         if (!tradingAutostart) {
-            log.info("Автозапуск стратегий отключён (trading.autostart=false). Ничего не останавливаем.");
+            log.info("Автозапуск стратегий отключён (trading.autostart=false). Ничего не запускаем.");
             return;
         }
-        scalpingRepo.findAll().stream()
-                .filter(ScalpingStrategySettings::isActive)
-                .forEach(s -> safeStart(s.getChatId(), "SCALPING"));
-
-        fibRepo.findAll().stream()
-                .filter(FibonacciGridStrategySettings::isActive)
-                .forEach(f -> safeStart(f.getChatId(), "FIBONACCI_GRID"));
+        autostartSuppliers.forEach((name, supplier) -> {
+            try {
+                supplier.get().forEach(chatId -> safeStart(chatId, name));
+            } catch (Exception e) {
+                log.error("Автозапуск {}: ошибка выборки активных — {}", name, e.getMessage());
+            }
+        });
     }
 
     private void safeStart(Long chatId, String name) {

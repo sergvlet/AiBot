@@ -489,20 +489,27 @@ public class BinanceExchangeClient implements ExchangeClient {
         return fetchPopularSymbols();
     }
 
+
     @Override
-    public TickerInfo getTicker(String symbol, NetworkType networkType) {
+    public Optional<TickerInfo> getTicker(String symbol, NetworkType networkType) {
         try {
             String url = baseUrl(networkType) + "/api/v3/ticker/24hr?symbol=" + enc(symbol);
             JsonNode t = parseJson(rest.getForObject(url, String.class));
             BigDecimal last = new BigDecimal(t.path("lastPrice").asText(t.path("weightedAvgPrice").asText("0")));
             BigDecimal pct  = new BigDecimal(t.path("priceChangePercent").asText("0"));
-            return TickerInfo.builder().price(last).changePct(pct).build();
+            return Optional.of(TickerInfo.builder().price(last).changePct(pct).build());
+        } catch (HttpClientErrorException e) {
+            if (e.getStatusCode() == HttpStatus.BAD_REQUEST &&
+                e.getResponseBodyAsString().contains("Invalid symbol")) {
+                log.warn("❌ Символ {} недоступен на Binance {}", symbol, networkType);
+                return Optional.empty();
+            }
+            throw e;
         } catch (Exception e) {
             log.error("Binance getTicker failed: {}", e.getMessage(), e);
-            throw new RuntimeException("Failed to fetch ticker for " + symbol, e);
+            return Optional.empty();
         }
     }
-
     @Override
     public List<Candle> fetchCandles(String apiKey, String secretKey, NetworkType n, String symbol, String interval, int limit) {
         try {

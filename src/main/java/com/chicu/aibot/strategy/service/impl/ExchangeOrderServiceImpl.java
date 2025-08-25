@@ -19,6 +19,12 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.*;
 
+/**
+ * Унифицированный сервис размещения/сопровождения ордеров для всех стратегий.
+ * - MARKET: нормализация количества под баланс и min notional (с мягкими фолбэками)
+ * - LIMIT: предварительная проверка баланса
+ * - Унификация статусов и гашение -2013 ("Order does not exist") при опросе
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -30,14 +36,15 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     /* ================= helpers ================= */
 
-    /** Хвосты котируемых валют, чтобы распарсить BASE/QUOTE из символа вида ETHUSDT, BTCUSDC и т.д. */
+    /** Хвосты для распознавания BASE/QUOTE (фолбэк, если из клиента метаданные недоступны). */
     private static final List<String> KNOWN_QUOTES = List.of(
-            "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI",
+            "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI",
             "BTC", "ETH", "BNB",
             "EUR", "USD", "TRY", "BRL", "GBP", "AUD", "UAH", "RUB",
             "TRX", "XRP", "DOGE", "SOL", "ADA"
     );
 
+    /** Пытаемся определить base/quote по символу; если клиент умеет — используйте его возможности (TODO). */
     private String[] splitSymbol(String symbol) {
         if (symbol == null || symbol.isBlank()) return new String[]{"", ""};
         for (String q : KNOWN_QUOTES) {
@@ -77,10 +84,10 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     /* ================= pre-checks ================= */
 
-    /** Бросает IllegalStateException, если баланса недостаточно. */
+    /** Бросает IllegalStateException, если баланса недостаточно для LIMIT. */
     private void precheckLimit(
             String symbol, Order.Side side, double price, double quantity,
-            AccountInfo acc, ExchangeClient client, ExchangeSettings settings
+            AccountInfo acc
     ) {
         String[] pq = splitSymbol(symbol);
         String base = pq[0], quote = pq[1];
@@ -106,12 +113,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
         }
     }
 
-    /** Контекст нормализации для MARKET: что реально купим/продадим и по какой референтной цене. */
+    /** Контекст нормализации для MARKET: итоговое qty и референтная цена. qty==0 → пропуск сделки. */
     private record MarketCtx(double qty, double refPrice) {}
 
     /**
-     * Нормализует MARKET-количество под доступный баланс и min notional.
-     * Возвращает MarketCtx (qty==0 означает «пропуск сделки» вместо исключения).
+     * MARKET-нормализация количества под доступный баланс и min notional (с фолбэком по котируемой валюте).
+     * Исключения не бросает — возвращает qty=0.0 если выполнить нельзя (мягкий отказ).
      */
     private MarketCtx precheckAndNormalizeMarket(
             ExchangeClient client, ExchangeSettings settings, ExchangeApiKey keys,
@@ -126,8 +133,8 @@ public class ExchangeOrderServiceImpl implements OrderService {
         String base = pq[0], quote = pq[1];
 
         // Текущая цена
-        TickerInfo t = client.getTicker(symbol, settings.getNetwork());
-        double price = toDouble(t.getPrice());
+        Optional<TickerInfo> t = client.getTicker(symbol, settings.getNetwork());
+        double price = toDouble(t.get().getPrice());
         if (price <= 0) {
             log.warn("Не удалось получить цену для {} (price={}) → пропуск MARKET.", symbol, price);
             return new MarketCtx(0.0, 0.0);
@@ -158,7 +165,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
             }
         }
 
-        // Требование по минимальному ноционалу (для стабильных котируемых — ~10)
+        // Требование по минимальному ноционалу (фолбэк для популярных стейблов ≈ 10)
         double minNotional = minNotionalForQuote(quote);
         if (minNotional > 0 && qty * price < minNotional) {
             double needQty = minNotional / price;
@@ -180,11 +187,11 @@ public class ExchangeOrderServiceImpl implements OrderService {
             qty = Math.max(qty, needQty);
         }
 
-        // Округление количества ВНИЗ, чтобы не упереться в LOT_SIZE
+        // Округление количества ВНИЗ, чтобы не упереться в LOT_SIZE (универсально: 6 знаков)
         qty = roundDown(qty);
 
         if (qty <= 0.0) {
-            log.info("Количество после нормализации стало 0 для {} → пропуск сделки.", symbol);
+            log.info("Количество после нормализации стало 0 для {} → пропуск MARKET.", symbol);
             return new MarketCtx(0.0, price);
         }
         if (minNotional > 0 && qty * price + 1e-9 < minNotional) {
@@ -210,19 +217,26 @@ public class ExchangeOrderServiceImpl implements OrderService {
     private static String format2(double v) { return String.format("%,.2f", v); }
     private static String format6(double v) { return String.format("%,.6f", v); }
 
+    private static boolean isOrderNotExistError(Throwable e) {
+        if (e == null) return false;
+        String msg = String.valueOf(e.getMessage());
+        return msg.contains("\"code\":-2013") || msg.toLowerCase(Locale.ROOT).contains("order does not exist");
+    }
+
     /* ================= API ================= */
 
     @Override
+    @Transactional
     public Order placeLimit(Long chatId, String symbol, Order.Side side, double price, double quantity) {
         log.info("Лимитный ордер → chatId={}, {} {} @{} qty={}", chatId, side, symbol, price, quantity);
 
-        ExchangeSettings settings = settingsService.getOrCreate(chatId);
-        ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
-        var client                = clientFactory.getClient(settings.getExchange());
+        var settings = settingsService.getOrCreate(chatId);
+        var keys     = settingsService.getApiKey(chatId);
+        var client   = clientFactory.getClient(settings.getExchange());
 
         // PRE-CHECK баланса
         AccountInfo acc = client.fetchAccountInfo(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork());
-        precheckLimit(symbol, side, price, quantity, acc, client, settings);
+        precheckLimit(symbol, side, price, quantity, acc);
 
         var req = OrderRequest.builder()
                 .symbol(symbol)
@@ -238,7 +252,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
         double executed   = toDouble(resp.getExecutedQty());
         boolean filled    = "FILLED".equals(statusNorm);
 
-        // ✅ Сохраняем LIMIT-ордер в БД — цена берётся из запроса
+        // ✅ Сохраняем LIMIT-ордер в БД (цена — из запроса)
         Instant now = Instant.now();
         try {
             ExchangeOrderEntity entity = ExchangeOrderEntity.builder()
@@ -251,12 +265,11 @@ public class ExchangeOrderServiceImpl implements OrderService {
                     .type("LIMIT")
                     .price(BigDecimal.valueOf(price))
                     .quantity(BigDecimal.valueOf(quantity))
-                    .executedQty(resp.getExecutedQty()) // может быть 0/NULL если ещё не исполнился
-                    .status(statusNorm)                 // NEW / PARTIALLY_FILLED / FILLED ...
+                    .executedQty(resp.getExecutedQty())
+                    .status(statusNorm)
                     .createdAt(now)
                     .updatedAt(now)
                     .build();
-
             orderRepo.save(entity);
         } catch (Exception e) {
             log.warn("Не удалось сохранить LIMIT-ордер {} в БД: {}", resp.getOrderId(), e.getMessage());
@@ -305,7 +318,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
         double executed   = toDouble(resp.getExecutedQty());
         boolean filled    = "FILLED".equals(statusNorm);
 
-        // ✅ Сохраняем MARKET-ордер в БД — price из референтной цены (тикера), у resp её нет
+        // ✅ Сохраняем MARKET-ордер (price — референтная из тикера; у resp её может не быть)
         Instant now = Instant.now();
         try {
             ExchangeOrderEntity entity = ExchangeOrderEntity.builder()
@@ -323,7 +336,6 @@ public class ExchangeOrderServiceImpl implements OrderService {
                     .createdAt(now)
                     .updatedAt(now)
                     .build();
-
             orderRepo.save(entity);
         } catch (Exception e) {
             log.warn("Не удалось сохранить MARKET-ордер {} в БД: {}", resp.getOrderId(), e.getMessage());
@@ -339,9 +351,9 @@ public class ExchangeOrderServiceImpl implements OrderService {
     public void cancel(Long chatId, Order order) {
         log.info("Отмена ордера → id={}, symbol={}", order.getId(), order.getSymbol());
 
-        ExchangeSettings settings = settingsService.getOrCreate(chatId);
-        ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
-        var client                = clientFactory.getClient(settings.getExchange());
+        var settings = settingsService.getOrCreate(chatId);
+        var keys     = settingsService.getApiKey(chatId);
+        var client   = clientFactory.getClient(settings.getExchange());
 
         // Узнаём актуальный статус у биржи (если доступен)
         String statusNorm = "";
@@ -351,17 +363,23 @@ public class ExchangeOrderServiceImpl implements OrderService {
             if (opt.isPresent()) {
                 statusNorm = normalizeStatus(opt.get().getStatus());
             } else {
-                // fallback к локальным флагам
-                statusNorm = order.isFilled() ? "FILLED" : (order.isCancelled() ? "CANCELED" : "");
+                // биржа не знает заказ — считаем, что его уже нет (чтобы не зацикливаться)
+                statusNorm = "CANCELED";
             }
         } catch (Exception e) {
-            log.debug("cancel(): не удалось получить статус ордера {}: {}", order.getId(), e.getMessage());
+            if (isOrderNotExistError(e)) {
+                statusNorm = "CANCELED";
+                log.info("cancel(): биржа вернула 'order does not exist', считаем отменённым: {}", order.getId());
+            } else {
+                log.debug("cancel(): не удалось получить статус ордера {}: {}", order.getId(), e.getMessage());
+            }
         }
 
         // Пропускаем отмену для терминальных статусов
         if ("FILLED".equals(statusNorm) || "CANCELED".equals(statusNorm)
                 || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm)) {
             log.info("Отмена пропущена: id={} status={}", order.getId(), statusNorm);
+            order.setCancelled("CANCELED".equals(statusNorm) || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm));
             return;
         }
 
@@ -373,7 +391,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
             if (ok) order.setCancelled(true);
             log.info("Отмена ордера id={} {}", order.getId(), ok ? "успех" : "не выполнена");
         } catch (Exception e) {
-            log.warn("Ошибка отмены ордера id={}: {}", order.getId(), e.getMessage());
+            if (isOrderNotExistError(e)) {
+                order.setCancelled(true);
+                log.info("cancel(): 'order does not exist' при отмене — помечаем отменённым: {}", order.getId());
+            } else {
+                log.warn("Ошибка отмены ордера id={}: {}", order.getId(), e.getMessage());
+            }
         }
     }
 
@@ -404,9 +427,9 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     @Override
     public List<Order> loadActiveOrders(Long chatId, String symbol) {
-        ExchangeSettings settings = settingsService.getOrCreate(chatId);
-        ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
-        var client                = clientFactory.getClient(settings.getExchange());
+        var settings = settingsService.getOrCreate(chatId);
+        var keys     = settingsService.getApiKey(chatId);
+        var client   = clientFactory.getClient(settings.getExchange());
 
         List<Order> result = new ArrayList<>();
         try {
@@ -444,9 +467,9 @@ public class ExchangeOrderServiceImpl implements OrderService {
     public void refreshOrderStatuses(Long chatId, String symbol, List<Order> localOrders) {
         if (localOrders == null || localOrders.isEmpty()) return;
 
-        ExchangeSettings settings = settingsService.getOrCreate(chatId);
-        ExchangeApiKey   keys     = settingsService.getApiKey(chatId);
-        var client                = clientFactory.getClient(settings.getExchange());
+        var settings = settingsService.getOrCreate(chatId);
+        var keys     = settingsService.getApiKey(chatId);
+        var client   = clientFactory.getClient(settings.getExchange());
 
         for (Order o : localOrders) {
             if (o.isCancelled() || o.isClosed()) continue;
@@ -456,7 +479,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
             try {
                 var opt = client.fetchOrder(
                         keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), symbol, id);
-                if (opt.isEmpty()) continue;
+                if (opt.isEmpty()) {
+                    // Биржа не знает ордер — перестанем его опрашивать
+                    o.setCancelled(true);
+                    log.info("refresh: биржа не вернула ордер (treat as canceled) id={}", id);
+                    continue;
+                }
 
                 OrderInfo st    = opt.get();
                 String status   = normalizeStatus(st.getStatus());
@@ -472,7 +500,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
                     default -> { /* NEW/прочее — как есть */ }
                 }
             } catch (Exception e) {
-                log.debug("refreshOrderStatuses: id={} ошибка: {}", id, e.getMessage());
+                if (isOrderNotExistError(e)) {
+                    o.setCancelled(true);
+                    log.info("refresh: 'order does not exist' → помечаем отменённым id={}", id);
+                } else {
+                    log.debug("refreshOrderStatuses: id={} ошибка: {}", id, e.getMessage());
+                }
             }
         }
     }

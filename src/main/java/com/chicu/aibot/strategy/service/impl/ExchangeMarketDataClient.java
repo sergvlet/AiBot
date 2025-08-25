@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 
 /**
  * Реализация {@link MarketDataClient} через ExchangeClient.
@@ -31,8 +32,8 @@ public class ExchangeMarketDataClient implements MarketDataClient {
         ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
         // запросим тикер
-        TickerInfo info = client.getTicker(symbol, settings.getNetwork());
-        BigDecimal priceBd = info.getPrice();
+        Optional<TickerInfo> info = client.getTicker(symbol, settings.getNetwork());
+        BigDecimal priceBd = info.get().getPrice();
         double price = priceBd != null ? priceBd.doubleValue() : 0.0;
 
         log.info("Текущая цена {} (биржа={}, сеть={}): {}", 

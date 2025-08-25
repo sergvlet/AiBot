@@ -47,19 +47,14 @@ public class BollingerStrategySettingsServiceImpl implements BollingerStrategySe
         def.setChatId(chatId);
         def.setSymbol(symbol);
         def.setTimeframe(timeframe);
-
         def.setCachedCandlesLimit(520);
         def.setOrderVolume(1.0);
-
         def.setPeriod(20);
-        def.setStdDevMultiplier(2.0);   // ✅ ОБЯЗАТЕЛЬНО: заполнить std_dev_mult
-
+        def.setStdDevMultiplier(2.0);
         def.setTakeProfitPct(1.0);
         def.setStopLossPct(0.5);
-
         def.setAllowLong(true);
         def.setAllowShort(false);
-
         def.setActive(false);
         return def;
     }
@@ -67,10 +62,6 @@ public class BollingerStrategySettingsServiceImpl implements BollingerStrategySe
     @Override
     @Transactional
     public BollingerStrategySettings save(BollingerStrategySettings settings) {
-        // подстраховка на случай, если кто-то где-то обнулил σ
-        if (settings.getStdDevMultiplier() == null) {
-            settings.setStdDevMultiplier(2.0);
-        }
         log.info("💾 Сохраняю настройки Bollinger для chatId={}", settings.getChatId());
         return repo.saveAndFlush(settings);
     }

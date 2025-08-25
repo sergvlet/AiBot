@@ -452,7 +452,7 @@ public class BybitExchangeClient implements ExchangeClient {
     }
 
     @Override
-    public TickerInfo getTicker(String symbol, NetworkType networkType) {
+    public Optional<TickerInfo> getTicker(String symbol, NetworkType networkType) {
         try {
             String url = baseUrl(networkType) + "/v5/market/tickers?category=spot&symbol=" + enc(symbol);
             ResponseEntity<String> resp = rest.exchange(url, HttpMethod.GET,
@@ -464,10 +464,10 @@ public class BybitExchangeClient implements ExchangeClient {
             JsonNode info = list.get(0);
             BigDecimal price     = new BigDecimal(info.path("lastPrice").asText("0"));
             BigDecimal changePct = new BigDecimal(info.path("price24hPcnt").asText("0"));
-            return TickerInfo.builder()
+            return Optional.ofNullable(TickerInfo.builder()
                     .price(price)
                     .changePct(changePct)
-                    .build();
+                    .build());
         } catch (Exception ex) {
             log.error("❌ Bybit getTicker error for {}: {}", symbol, ex.getMessage(), ex);
             throw new RuntimeException("Failed to fetch ticker for " + symbol, ex);

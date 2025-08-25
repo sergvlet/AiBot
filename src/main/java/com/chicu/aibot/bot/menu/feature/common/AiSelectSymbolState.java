@@ -117,16 +117,27 @@ public class AiSelectSymbolState implements MenuState {
         List<String> lines = new ArrayList<>();
         for (String sym : slice) {
             try {
-                TickerInfo info = client.getTicker(sym, net);
-                if (info == null || info.getPrice() == null || info.getChangePct() == null) continue;
+                Optional<TickerInfo> opt = client.getTicker(sym, net);
+                if (opt.isEmpty()) continue;
+
+                TickerInfo info = opt.get();
+                if (info.getPrice() == null || info.getChangePct() == null) continue;
 
                 BigDecimal price = info.getPrice().setScale(2, RoundingMode.HALF_UP);
                 BigDecimal pct   = info.getChangePct().setScale(2, RoundingMode.HALF_UP);
-                String arrow = pct.signum() >= 0 ? "↑" : "↓";
 
-                lines.add(String.format("%s: %s %s%% %s", sym, price.toPlainString(), pct.toPlainString(), arrow));
-            } catch (RuntimeException ignore) {
-                // пропускаем проблемные символы
+                // нормализация процента (если приходит < 1 → значит доля, умножаем на 100)
+                BigDecimal normPct = pct.abs().compareTo(BigDecimal.ONE) <= 0
+                        ? pct.multiply(BigDecimal.valueOf(100))
+                        : pct;
+
+                // зелёная 🔺 вверх, красная 🔻 вниз
+                String arrow = pct.signum() >= 0 ? "🔺" : "🔻";
+
+                lines.add(String.format("%s: %s %s%% %s",
+                        sym, price.toPlainString(), normPct.toPlainString(), arrow));
+            } catch (RuntimeException e) {
+                log.warn("Ошибка получения тикера {}: {}", sym, e.getMessage());
             }
         }
 
@@ -168,7 +179,7 @@ public class AiSelectSymbolState implements MenuState {
         String data   = update.getCallbackQuery().getData();
         Long   chatId = update.getCallbackQuery().getMessage().getChatId();
 
-        // 0) Если это «возврат» в состояние, откуда пришли (например, ai_trading_scalping_config) — отдадим управление туда
+        // возврат в состояние, откуда пришли
         String backState = sessionService.getReturnState(chatId);
         if (backState != null && backState.equals(data)) {
             clearSessionAttrs(chatId, /*keepSvc*/ false);
@@ -185,7 +196,7 @@ public class AiSelectSymbolState implements MenuState {
             return fallback;
         }
 
-        // 1) Выбрали категорию
+        // выбор категории
         if (data.startsWith("symbol_")
             && !data.startsWith("symbol_page_")
             && !data.startsWith("symbol_select_")) {
@@ -208,7 +219,7 @@ public class AiSelectSymbolState implements MenuState {
             return NAME;
         }
 
-        // 2) Пагинация
+        // пагинация
         if (data.startsWith("symbol_page_")) {
             try {
                 int page = Integer.parseInt(data.substring("symbol_page_".length()));
@@ -217,7 +228,7 @@ public class AiSelectSymbolState implements MenuState {
             return NAME;
         }
 
-        // 3) Выбор конкретной пары
+        // выбор конкретной пары
         if (data.startsWith("symbol_select_")) {
             String symbol = data.substring("symbol_select_".length());
             Object settings = symbolSvc.getOrCreate(chatId);
@@ -227,13 +238,13 @@ public class AiSelectSymbolState implements MenuState {
             return symbolSvc.getReturnState();
         }
 
-        // 4) Вернуться в меню категорий этого экрана
+        // вернуться в меню категорий
         if (NAME.equals(data)) {
-            clearSessionAttrs(chatId, /*keepSvc*/ true); // стратегию помним
+            clearSessionAttrs(chatId, /*keepSvc*/ true);
             return NAME;
         }
 
-        // 5) Любой иной колбэк (если вдруг положили сюда кнопку с именем состояния) — передаём дальше фреймворка
+        // fallback — пробрасываем дальше
         return !data.isBlank() ? data : NAME;
     }
 

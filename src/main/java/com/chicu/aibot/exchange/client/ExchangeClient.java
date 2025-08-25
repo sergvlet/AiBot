@@ -53,7 +53,7 @@ public interface ExchangeClient {
     /**
      * Возвращает текущую цену и процентное изменение за 24ч.
      */
-    TickerInfo getTicker(String symbol, NetworkType networkType);
+    Optional<TickerInfo> getTicker(String symbol, NetworkType networkType);
 
     /**
      * Получение исторических свечей (OHLCV).
