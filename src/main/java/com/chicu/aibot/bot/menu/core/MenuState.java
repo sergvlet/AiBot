@@ -7,10 +7,14 @@ import org.telegram.telegrambots.meta.api.objects.Update;
  * Интерфейс экрана-меню.
  */
 public interface MenuState {
-    /** Уникальное имя состояния. */
+    /**
+     * Уникальное имя состояния.
+     */
     String name();
 
-    /** Генерирует SendMessage для отображения этого экрана. */
+    /**
+     * Генерирует SendMessage для отображения этого экрана.
+     */
     SendMessage render(Long chatId);
 
     /**

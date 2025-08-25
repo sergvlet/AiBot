@@ -1,4 +1,4 @@
-package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid;
+package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;

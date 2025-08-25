@@ -1,11 +1,11 @@
 package com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.impl;
 
-import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingLiveService;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingPanelRenderer;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.view.LiveSnapshot;
 import com.chicu.aibot.bot.ui.AdaptiveKeyboard;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.service.ExchangeOrderDbService;
+import com.chicu.aibot.exchange.service.MarketLiveService;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.service.ScalpingStrategySettingsService;
 import com.chicu.aibot.trading.trade.TradeLogService;
@@ -30,8 +30,7 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
     public static final String BTN_HELP        = "scalp_help";
 
     private final ScalpingStrategySettingsService settingsService;
-    private final ScalpingLiveService liveService;
-    private final TradeLogService tradeLogService;
+    private final MarketLiveService liveService;    private final TradeLogService tradeLogService;
     private final ExchangeOrderDbService orderDb;
 
     @Override

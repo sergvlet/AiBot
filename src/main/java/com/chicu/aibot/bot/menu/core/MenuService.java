@@ -20,10 +20,14 @@ public class MenuService {
     private final MenuSessionService sessionService;
     private final List<MenuState> states;
 
-    /** Хранилище всплывающих уведомлений (например, "⚠️ Не задано значение") */
+    /**
+     * Хранилище всплывающих уведомлений (например, "⚠️ Не задано значение")
+     */
     private final Map<Long, String> notices = new HashMap<>();
 
-    /** Имя → объект состояния, наполняется при инициализации */
+    /**
+     * Имя → объект состояния, наполняется при инициализации
+     */
     private Map<String, MenuState> stateMap;
 
     @PostConstruct
@@ -34,7 +38,7 @@ public class MenuService {
     }
 
     /**
-     * Установить отложенное уведомление, которое отобразится при следующем рендере.
+     * Установить отложенное уведомление, которое отобразится при следующем рендер.
      */
     public void deferNotice(Long chatId, String message) {
         notices.put(chatId, message);
@@ -60,22 +64,14 @@ public class MenuService {
      */
     public String handleInput(Update update) {
         Long chatId = extractChatId(update);
-
-        // Получить текущее состояние или MAIN_MENU по умолчанию
         String current = Optional.ofNullable(sessionService.getCurrentState(chatId))
                 .orElse(MAIN_MENU);
-
-        // Найти обработчик
         MenuState handler = stateMap.getOrDefault(current, stateMap.get(MAIN_MENU));
         String next = handler.handleInput(update);
-
-        // Если следующее состояние не найдено — сбрасываем
         if (!stateMap.containsKey(next)) {
             log.warn("Unknown next state '{}', сбрасываем в MAIN_MENU", next);
             next = MAIN_MENU;
         }
-
-        // Сохраняем новое состояние
         sessionService.setCurrentState(chatId, next);
         return next;
     }

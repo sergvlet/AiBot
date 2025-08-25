@@ -1,11 +1,11 @@
-package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid.service.impl;
+package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.service.impl;
 
-import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid.service.FibonacciGridPanelRenderer;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingLiveService;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.service.FibonacciGridPanelRenderer;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.view.LiveSnapshot;
 import com.chicu.aibot.bot.ui.AdaptiveKeyboard;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.service.ExchangeOrderDbService;
+import com.chicu.aibot.exchange.service.MarketLiveService;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
 import com.chicu.aibot.trading.trade.TradeLogService;
@@ -38,8 +38,7 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
     public static final String BTN_HELP           = "fib_help";
 
     private final FibonacciGridStrategySettingsService settingsService;
-    private final ScalpingLiveService liveService;          // универсальный снапшот по символу
-    private final TradeLogService tradeLogService;
+    private final MarketLiveService liveService;    private final TradeLogService tradeLogService;
     private final ExchangeOrderDbService orderDb;
 
     @Override
@@ -49,11 +48,11 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
 
         LiveSnapshot live = liveService.build(chatId, symbol);
 
-        // общий PnL-блок (через утилиту)
+        // PnL-блок
         var lastTrade = tradeLogService.getLastTrade(chatId, symbol).orElse(null);
         String pnlBlock = buildPnlBlock(lastTrade, symbol, live);
 
-        // открытые ордера — общее форматирование
+        // открытые ордера
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
         int openCount = openOrders.size();
@@ -121,37 +120,30 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 .build();
     }
 
-    // ---------- UI helpers ----------
+    /* ---------- UI helpers ---------- */
 
     private InlineKeyboardMarkup buildKeyboard(FibonacciGridStrategySettings s) {
         List<InlineKeyboardButton> g1 = List.of(
-                btn("ℹ️ Описание стратегии", BTN_HELP),
-                btn("⏱ Обновить", BTN_REFRESH),
-                btn("‹ Назад", "ai_trading")
+                AdaptiveKeyboard.btn("ℹ️ Описание", BTN_HELP),
+                AdaptiveKeyboard.btn("⏱ Обновить", BTN_REFRESH),
+                AdaptiveKeyboard.btn("‹ Назад", "ai_trading")
         );
         List<InlineKeyboardButton> g2 = List.of(
-                btn("🎯 Символ", BTN_EDIT_SYMBOL),
-                btn("💰 Объём, %", BTN_EDIT_ORDER_VOL),
-                btn("🧱 Шаг сетки, %", BTN_EDIT_GRID)
+                AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
+                AdaptiveKeyboard.btn("💰 Объём, %", BTN_EDIT_ORDER_VOL),
+                AdaptiveKeyboard.btn("🧱 Шаг, %", BTN_EDIT_GRID),
+                AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
         );
         List<InlineKeyboardButton> g3 = List.of(
-                btn("📊 Макс. ордеров", BTN_EDIT_MAX_ORD),
-                btn("🎯 TP, %", BTN_EDIT_TP),
-                btn("🛡 SL, %", BTN_EDIT_SL)
+                AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
+                AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
+                AdaptiveKeyboard.btn("🎯 TP, %", BTN_EDIT_TP),
+                AdaptiveKeyboard.btn("🛡 SL, %", BTN_EDIT_SL),
+                AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
         );
         List<InlineKeyboardButton> g4 = List.of(
-                btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
-                btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
-                btn("⏱ Таймфрейм", BTN_EDIT_TF)
+                AdaptiveKeyboard.btn("▶️ ВКЛ/ВЫКЛ", BTN_TOGGLE_ACTIVE)
         );
-        List<InlineKeyboardButton> g5 = List.of(
-                btn("▶️ Стратегия: ВКЛ/ВЫКЛ", BTN_TOGGLE_ACTIVE)
-        );
-
-        return AdaptiveKeyboard.markupFromGroups(List.of(g1, g2, g3, g4, g5));
-    }
-
-    private InlineKeyboardButton btn(String text, String data) {
-        return InlineKeyboardButton.builder().text(text).callbackData(data).build();
+        return AdaptiveKeyboard.markupFromGroups(List.of(g1, g2, g3, g4), 3);
     }
 }

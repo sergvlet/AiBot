@@ -1,8 +1,8 @@
-package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid;
+package com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci;
 
 import com.chicu.aibot.bot.menu.core.MenuSessionService;
 import com.chicu.aibot.bot.menu.core.MenuState;
-import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid.service.impl.FibonacciGridPanelRendererImpl;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.service.impl.FibonacciGridPanelRendererImpl;
 import com.chicu.aibot.bot.menu.feature.common.AiSelectSymbolState;
 import com.chicu.aibot.bot.ui.UiAutorefreshService;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
@@ -22,7 +22,7 @@ public class FibonacciGridConfigState implements MenuState {
     private final FibonacciGridStrategySettingsService settingsService;
     private final MenuSessionService sessionService;
     private final SchedulerService schedulerService;
-    private final com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacciGrid.service.FibonacciGridPanelRenderer panelRenderer;
+    private final com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.service.FibonacciGridPanelRenderer panelRenderer;
     private final UiAutorefreshService uiAutorefresh;
 
     @Override
