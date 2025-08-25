@@ -9,6 +9,7 @@ import com.chicu.aibot.exchange.service.MarketLiveService;
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.service.ScalpingStrategySettingsService;
 import com.chicu.aibot.trading.trade.TradeLogService;
+import com.chicu.aibot.trading.trade.model.TradeLogEntry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -16,6 +17,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
 import java.util.List;
+import java.util.Optional;
 
 import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.*;
 
@@ -25,12 +27,13 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
 
     public static final String NAME            = "ai_trading_scalping_config";
     public static final String BTN_REFRESH     = "scalp_refresh";
-    public static final String BTN_EDIT_SYMBOL = "edit_symbol";
+    public static final String BTN_EDIT_SYMBOL = "scalp_edit_symbol";
     public static final String BTN_TOGGLE      = "scalp_toggle_active";
     public static final String BTN_HELP        = "scalp_help";
 
     private final ScalpingStrategySettingsService settingsService;
-    private final MarketLiveService liveService;    private final TradeLogService tradeLogService;
+    private final MarketLiveService liveService;
+    private final TradeLogService tradeLogService;
     private final ExchangeOrderDbService orderDb;
 
     @Override
@@ -40,26 +43,33 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
 
         LiveSnapshot live = liveService.build(chatId, symbol);
 
-        var lastTrade = tradeLogService.getLastTrade(chatId, symbol).orElse(null);
-        String pnlBlock = buildPnlBlock(lastTrade, symbol, live);
+        // ===== Сделки / PnL =====
+        Optional<TradeLogEntry> lastTradeOpt = tradeLogService.getLastTrade(chatId, symbol);
+        String pnlBlock = lastTradeOpt
+                .map(last -> buildPnlBlock(last, symbol, live))
+                .orElse("_нет сделок_");
 
+        double totalPnl = tradeLogService.getTotalPnl(chatId, symbol).orElse(0.0);
+
+        // ===== Ордера =====
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
-        int openCount = openOrders.size();
 
+        // ===== Основной текст =====
         String text = ("""
                 *📊 Scalping Strategy*
-                %s
+                Статус: %s
 
                 *Рынок:* `%s`
-                Изм.: %s  |  Цена: `%s`
+                %s Изм.: %s | 💵 Цена: `%s`
 
                 *Баланс:*
-                • %s: `%s`
-                • %s: `%s`
+                ⚡ %s: `%s`
+                💵 %s: `%s`
 
                 *Сделки / PnL:*
                 %s
+                💰 Всего PnL: %+.2f USDT
 
                 *Открытые ордера (%d):*
                 %s
@@ -67,23 +77,26 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 *Параметры:*
                 • Объем: `%.4f`
                 • Таймфрейм: `%s`
-                • История: `%d` • Окно: `%d`
-                • ΔЦены: `%.2f%%` • Макс. спред: `%.2f%%`
+                • История: `%d`
+                • Окно: `%d`
+                • ΔЦены: `%.2f%%`
+                • Макс. спред: `%.2f%%`
                 • TP: `%.2f%%` • SL: `%.2f%%`
-                • Статус: *%s*
                 """).stripTrailing().formatted(
-                s.isActive() ? "Стратегия: 🟢 *Запущена*" : "Стратегия: 🔴 *Остановлена*",
+                s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
 
                 symbol,
+                live.getChangePct() >= 0 ? "📈" : "📉",
                 live.getChangeStr(),
                 live.getPriceStr(),
 
-                live.getBase(),  live.getBaseBal(),
+                live.getBase(), live.getBaseBal(),
                 live.getQuote(), live.getQuoteBal(),
 
                 pnlBlock,
+                totalPnl,
 
-                openCount,
+                openOrders.size(),
                 openOrdersBlock,
 
                 s.getOrderVolume(),
@@ -93,36 +106,35 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 s.getPriceChangeThreshold(),
                 s.getSpreadThreshold(),
                 s.getTakeProfitPct(),
-                s.getStopLossPct(),
-                s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
+                s.getStopLossPct()
         );
 
-        // ——— КНОПКИ ———
-        var g1 = List.of(
-                button("ℹ️ Описание стратегии", BTN_HELP),
-                button("⏱ Обновить", BTN_REFRESH)
+        // ===== Кнопки =====
+        List<InlineKeyboardButton> g1 = List.of(
+                AdaptiveKeyboard.btn("ℹ️ Описание", BTN_HELP),
+                AdaptiveKeyboard.btn("⏱ Обновить", BTN_REFRESH),
+                AdaptiveKeyboard.btn("‹ Назад", "ai_trading")
         );
-        var g2 = List.of(
-                button("🎯 Символ", BTN_EDIT_SYMBOL),
-                button("⏱ Таймфрейм", "scalp_edit_timeframe"),
-                button("💰 Объём сделки, %", "scalp_edit_orderVolume"),
-                button("📋 История", "scalp_edit_cachedCandlesLimit")
+        List<InlineKeyboardButton> g2 = List.of(
+                AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
+                AdaptiveKeyboard.btn("💰 Объём %", "scalp_edit_orderVolume"),
+                AdaptiveKeyboard.btn("⏱ Таймфрейм", "scalp_edit_timeframe"),
+                AdaptiveKeyboard.btn("📋 История", "scalp_edit_cachedCandlesLimit")
         );
-        var g3 = List.of(
-                button("🪟 Окно", "scalp_edit_windowSize"),
-                button("⚡ Триггер входа, %", "scalp_edit_priceChangeThreshold"),
-                button("↔️ Макс. спред, %", "scalp_edit_spreadThreshold")
+        List<InlineKeyboardButton> g3 = List.of(
+                AdaptiveKeyboard.btn("🪟 Окно", "scalp_edit_windowSize"),
+                AdaptiveKeyboard.btn("⚡ ΔЦены %", "scalp_edit_priceChangeThreshold"),
+                AdaptiveKeyboard.btn("↔️ Спред %", "scalp_edit_spreadThreshold")
         );
-        var g4 = List.of(
-                button("🎯 Тейк-профит, %", "scalp_edit_takeProfitPct"),
-                button("🛡 Стоп-лосс, %", "scalp_edit_stopLossPct")
+        List<InlineKeyboardButton> g4 = List.of(
+                AdaptiveKeyboard.btn("🎯 TP %", "scalp_edit_takeProfitPct"),
+                AdaptiveKeyboard.btn("🛡 SL %", "scalp_edit_stopLossPct")
         );
-        var g5 = List.of(
-                button("▶️ Стратегия: ВКЛ/ВЫКЛ", BTN_TOGGLE),
-                button("‹ Назад", "ai_trading")
+        List<InlineKeyboardButton> g5 = List.of(
+                AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить стратегию" : "🟢 Запустить стратегию", BTN_TOGGLE)
         );
 
-        InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(g1, g2, g3, g4, g5));
+        InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(g1, g2, g3, g4, g5), 3);
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
@@ -131,9 +143,5 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 .disableWebPagePreview(true)
                 .replyMarkup(markup)
                 .build();
-    }
-
-    private InlineKeyboardButton button(String text, String data) {
-        return InlineKeyboardButton.builder().text(text).callbackData(data).build();
     }
 }

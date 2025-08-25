@@ -7,13 +7,11 @@ import com.chicu.aibot.exchange.model.OrderInfo;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
 import com.chicu.aibot.strategy.model.Order;
 import com.chicu.aibot.strategy.service.OrderService;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -24,17 +22,11 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     private final ExchangeClientFactory clientFactory;
     private final ExchangeSettingsService settingsService;
-    private final OrderExecutionService executionService; // ⚡ инжектим новый сервис
+    private final OrderExecutionService executionService; // вынесена логика placeLimit/placeMarket
 
     private String normalizeStatus(String raw) {
         if (raw == null) return "";
         return raw.trim().toUpperCase(Locale.ROOT).replace(" ", "").replace("_", "");
-    }
-
-    private static boolean isOrderNotExistError(Throwable e) {
-        if (e == null) return false;
-        String msg = String.valueOf(e.getMessage());
-        return msg.contains("\"code\":-2013") || msg.toLowerCase(Locale.ROOT).contains("order does not exist");
     }
 
     @Override
@@ -51,8 +43,14 @@ public class ExchangeOrderServiceImpl implements OrderService {
     public void cancel(Long chatId, Order order) {
         log.info("Отмена ордера → id={}, symbol={}", order.getId(), order.getSymbol());
 
+        if (order.getId() == null || order.getId().startsWith("REJECTED-")) {
+            order.setCancelled(true);
+            log.info("Отмена: локальный REJECTED или пустой id → {}", order.getId());
+            return;
+        }
+
         var settings = settingsService.getOrCreate(chatId);
-        var keys = settingsService.getApiKey(chatId);
+        var keys     = settingsService.getApiKey(chatId);
         ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
         try {
@@ -64,9 +62,9 @@ public class ExchangeOrderServiceImpl implements OrderService {
                     order.getId()
             );
             order.setCancelled(ok);
-            log.info("Отмена ордера {}: {}", order.getId(), ok ? "успех" : "не выполнена");
+            log.info("Отмена ордера {}: {}", order.getId(), ok ? "успешно" : "не выполнена");
         } catch (Exception e) {
-            if (isOrderNotExistError(e)) {
+            if (String.valueOf(e.getMessage()).contains("order does not exist")) {
                 order.setCancelled(true);
                 log.info("Биржа вернула 'order does not exist', помечаем отменённым: {}", order.getId());
             } else {
@@ -77,45 +75,43 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     @Override
     public void closePosition(Long chatId, Order order) {
-        log.info("Закрыть позицию → id={}, symbol={}, side={}, volume={}",
-                order.getId(), order.getSymbol(), order.getSide(), order.getVolume());
+        log.info("Закрыть позицию → {}", order);
 
         if (order.getVolume() <= 0.0) {
-            log.warn("Пропуск закрытия: объём = {}", order.getVolume());
+            log.warn("Пропуск закрытия: volume=0");
             return;
         }
 
         Order.Side opposite = (order.getSide() == Order.Side.BUY) ? Order.Side.SELL : Order.Side.BUY;
-        Order closingOrder = executionService.placeMarket(chatId, order.getSymbol(), opposite, order.getVolume());
-
-        if (closingOrder.getVolume() > 0.0) {
-            order.setClosed(true);
-            log.info("Позиция закрыта: id={}, closedQty={}", order.getId(), closingOrder.getVolume());
-        } else {
-            log.warn("Не удалось закрыть позицию id={}: market executedQty=0 (filled={})",
-                    order.getId(), closingOrder.isFilled());
-        }
+        executionService.placeMarket(chatId, order.getSymbol(), opposite, order.getVolume());
+        order.setClosed(true);
     }
 
     @Override
     public List<Order> loadActiveOrders(Long chatId, String symbol) {
         var settings = settingsService.getOrCreate(chatId);
-        var keys = settingsService.getApiKey(chatId);
+        var keys     = settingsService.getApiKey(chatId);
         ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
         List<Order> result = new ArrayList<>();
         try {
             List<OrderInfo> openOrders = client.fetchOpenOrders(
-                    keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), symbol);
+                    keys.getPublicKey(),
+                    keys.getSecretKey(),
+                    settings.getNetwork(),
+                    symbol
+            );
 
             for (OrderInfo oi : openOrders) {
-                Order.Side side = (oi.getSide() == OrderSide.BUY) ? Order.Side.BUY : Order.Side.SELL;
+                Order.Side side = (oi.getSide() == OrderSide.BUY)
+                        ? Order.Side.BUY
+                        : Order.Side.SELL;
 
-                double price = oi.getPrice() == null ? 0.0 : oi.getPrice().doubleValue();
+                double price   = oi.getPrice() == null ? 0.0 : oi.getPrice().doubleValue();
                 double execQty = oi.getExecutedQty() == null ? 0.0 : oi.getExecutedQty().doubleValue();
 
                 String statusNorm = normalizeStatus(oi.getStatus());
-                boolean filled = "FILLED".equals(statusNorm);
+                boolean filled    = "FILLED".equals(statusNorm);
 
                 result.add(new Order(
                         oi.getOrderId(),
@@ -128,7 +124,6 @@ public class ExchangeOrderServiceImpl implements OrderService {
                         false
                 ));
             }
-            log.info("Открытые ордера: {} шт по {} (chatId={})", result.size(), symbol, chatId);
         } catch (Exception e) {
             log.warn("Ошибка загрузки активных ордеров для {}: {}", symbol, e.getMessage());
         }
@@ -140,13 +135,20 @@ public class ExchangeOrderServiceImpl implements OrderService {
         if (cache == null || cache.isEmpty()) return;
 
         var settings = settingsService.getOrCreate(chatId);
-        var keys = settingsService.getApiKey(chatId);
+        var keys     = settingsService.getApiKey(chatId);
         ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
         for (Order o : cache) {
             if (o.isCancelled() || o.isClosed()) continue;
             String id = o.getId();
             if (id == null) continue;
+
+            // локальные REJECTED ордера сразу помечаем как отменённые
+            if (id.startsWith("REJECTED-")) {
+                o.setCancelled(true);
+                log.debug("refresh: локальный REJECTED ордер {} помечен отменённым", id);
+                continue;
+            }
 
             try {
                 var opt = client.fetchOrder(
@@ -156,6 +158,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
                         symbol,
                         id
                 );
+
                 if (opt.isEmpty()) {
                     o.setCancelled(true);
                     log.info("refresh: биржа не вернула ордер (treat as canceled) id={}", id);
@@ -165,22 +168,23 @@ public class ExchangeOrderServiceImpl implements OrderService {
                 OrderInfo st = opt.get();
                 String status = normalizeStatus(st.getStatus());
                 double executed = st.getExecutedQty() == null ? 0.0 : st.getExecutedQty().doubleValue();
+
                 if (executed > 0.0) {
                     o.setVolume(executed);
                 }
 
                 switch (status) {
                     case "FILLED" -> o.setFilled(true);
-                    case "PARTIALLY_FILLED" -> {}
+                    case "PARTIALLY_FILLED" -> {} // оставляем как есть
                     case "CANCELED", "REJECTED", "EXPIRED" -> o.setCancelled(true);
                     default -> {}
                 }
             } catch (Exception e) {
-                if (isOrderNotExistError(e)) {
+                if (String.valueOf(e.getMessage()).contains("order does not exist")) {
                     o.setCancelled(true);
                     log.info("refresh: 'order does not exist' → помечаем отменённым id={}", id);
                 } else {
-                    log.debug("refreshOrderStatuses: id={} ошибка: {}", id, e.getMessage());
+                    log.debug("Ошибка обновления статуса ордера {}: {}", id, e.getMessage());
                 }
             }
         }

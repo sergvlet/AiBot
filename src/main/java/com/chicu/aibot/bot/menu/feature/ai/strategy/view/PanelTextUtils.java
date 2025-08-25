@@ -1,7 +1,7 @@
 package com.chicu.aibot.bot.menu.feature.ai.strategy.view;
 
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
-import com.chicu.aibot.trading.trade.TradeLogEvent;
+import com.chicu.aibot.trading.trade.model.TradeLogEntry;
 
 import java.math.BigDecimal;
 import java.util.Collection;
@@ -9,7 +9,7 @@ import java.util.stream.Collectors;
 
 /**
  * Общие текстовые хелперы для UI-панелей стратегий.
- * Используется и скальпингом, и сеткой Фибоначчи.
+ * Используется и скальпингом, и сеткой Фибоначчи, и Боллинджером.
  */
 public final class PanelTextUtils {
     private PanelTextUtils() {}
@@ -38,28 +38,24 @@ public final class PanelTextUtils {
     }
 
     /** Блок PnL для последней сделки. Если last == null — возвращает "_нет сделок_". */
-    public static String buildPnlBlock(TradeLogEvent last, String symbol, LiveSnapshot live) {
+    public static String buildPnlBlock(TradeLogEntry last, String symbol, LiveSnapshot live) {
         if (last == null) return "_нет сделок_";
 
-        double entry = last.getPrice();
-        double qty   = last.getQuantity();
+        double entry = last.getEntryPrice() != null ? last.getEntryPrice().doubleValue() : 0.0;
+        double qty   = last.getVolume()     != null ? last.getVolume().doubleValue()     : 0.0;
         double now   = live.getLastPrice();
 
         double pnlAbs; // в quote
         double pnlPct; // в %
-        switch (last.getSide()) {
-            case BUY -> {
-                pnlAbs = (now - entry) * qty;
-                pnlPct = entry > 0 ? (now - entry) / entry * 100.0 : 0.0;
-            }
-            case SELL -> {
-                pnlAbs = (entry - now) * qty;
-                pnlPct = entry > 0 ? (entry - now) / entry * 100.0 : 0.0;
-            }
-            default -> {
-                pnlAbs = 0.0;
-                pnlPct = 0.0;
-            }
+        if ("BUY".equalsIgnoreCase(last.getSide())) {
+            pnlAbs = (now - entry) * qty;
+            pnlPct = entry > 0 ? (now - entry) / entry * 100.0 : 0.0;
+        } else if ("SELL".equalsIgnoreCase(last.getSide())) {
+            pnlAbs = (entry - now) * qty;
+            pnlPct = entry > 0 ? (entry - now) / entry * 100.0 : 0.0;
+        } else {
+            pnlAbs = 0.0;
+            pnlPct = 0.0;
         }
 
         String dirEmoji = pnlAbs >= 0 ? "🟢" : "🔴";
@@ -72,7 +68,7 @@ public final class PanelTextUtils {
                • Вложено: `%s`
                • PnL: %s `%s`  (%s)
                """).stripTrailing().formatted(
-                last.getSide().name(), symbol, entry, qty,
+                last.getSide(), symbol, entry, qty,
                 investedS,
                 dirEmoji, pnlAbsS, pnlPctS
         );

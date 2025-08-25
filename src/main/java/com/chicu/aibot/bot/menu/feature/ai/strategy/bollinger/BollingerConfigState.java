@@ -23,6 +23,8 @@ public class BollingerConfigState implements MenuState {
     private static final String BTN_REFRESH       = "boll_refresh";
     private static final String BTN_EDIT_SYMBOL   = "boll_edit_symbol";
     private static final String BTN_TOGGLE_ACTIVE = "boll_toggle_active";
+    private static final String BTN_TOGGLE_LONG   = "boll_toggle_allow_long";
+    private static final String BTN_TOGGLE_SHORT  = "boll_toggle_allow_short";
 
     private final BollingerStrategySettingsService settingsService;
     private final MenuSessionService sessionService;
@@ -63,6 +65,22 @@ public class BollingerConfigState implements MenuState {
             settingsService.save(s);
             return NAME;
         }
+
+        // ====== 🔥 добавляем переключатели LONG/SHORT ======
+        if (BTN_TOGGLE_LONG.equals(data)) {
+            BollingerStrategySettings s = settingsService.getOrCreate(chatId);
+            s.setAllowLong(!s.getAllowLong());
+            settingsService.save(s);
+            return NAME;
+        }
+
+        if (BTN_TOGGLE_SHORT.equals(data)) {
+            BollingerStrategySettings s = settingsService.getOrCreate(chatId);
+            s.setAllowShort(!s.getAllowShort());
+            settingsService.save(s);
+            return NAME;
+        }
+        // =================================================
 
         // help-экран
         if (BollingerHelpState.NAME.equals(data)) {
