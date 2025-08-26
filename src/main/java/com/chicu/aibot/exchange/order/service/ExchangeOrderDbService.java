@@ -21,12 +21,13 @@ public class ExchangeOrderDbService {
 
     private final ExchangeOrderRepository repo;
 
-    private static final Set<String> OPEN = Set.of("NEW","PARTIALLY_FILLED");
-    private static final Set<String> CLOSED = Set.of("FILLED","CANCELED","REJECTED","EXPIRED");
+    private static final Set<String> OPEN = Set.of("NEW", "PARTIALLY_FILLED");
+    private static final Set<String> CLOSED = Set.of("FILLED", "CANCELED", "REJECTED", "EXPIRED");
 
     @Transactional
     public ExchangeOrderEntity savePlaced(Long chatId, String exchange, NetworkType network,
-                                          OrderRequest req, OrderResponse resp) {
+                                          OrderRequest req, OrderResponse resp,
+                                          BigDecimal pnl, BigDecimal pnlPct) {
         Instant now = Instant.now();
         ExchangeOrderEntity e = repo.findByChatIdAndExchangeAndNetworkAndOrderId(
                 chatId, exchange, network, resp.getOrderId()).orElseGet(ExchangeOrderEntity::new);
@@ -42,42 +43,23 @@ public class ExchangeOrderDbService {
         e.setQuantity(req.getQuantity());
         e.setExecutedQty(resp.getExecutedQty());
         e.setStatus(resp.getStatus() == null ? "NEW" : resp.getStatus());
+
+        e.setCommission(resp.getCommission());
+        e.setCommissionAsset(resp.getCommissionAsset());
+
+        e.setPnl(pnl);
+        e.setPnlPct(pnlPct);
+
         if (e.getCreatedAt() == null) e.setCreatedAt(now);
         e.setUpdatedAt(now);
         e.setLastCheckedAt(now);
         return repo.save(e);
     }
 
-    public boolean hasOpenOrderAtPrice(Long chatId, String symbol, String side, BigDecimal price) {
-        return !repo.findOpenByPrice(chatId, symbol, side, price, OPEN).isEmpty();
-    }
-
     public List<ExchangeOrderEntity> findOpenByChatAndSymbol(Long chatId, String symbol) {
         return repo.findByChatIdAndSymbolAndStatusIn(chatId, symbol, OPEN);
     }
 
-    public List<ExchangeOrderEntity> findFilledBuys(Long chatId, String symbol) {
-        return repo.findByChatIdAndSymbolAndSideAndStatusIn(chatId, symbol, "BUY", Set.of("FILLED"));
-    }
-
-    @Transactional
-    public void updateFromExchange(Long chatId, String exchange, NetworkType network,
-                                   String orderId, String status, BigDecimal executedQty) {
-        repo.findByChatIdAndExchangeAndNetworkAndOrderId(chatId, exchange, network, orderId)
-            .ifPresent(e -> {
-                e.setStatus(status);
-                e.setExecutedQty(executedQty);
-                e.setUpdatedAt(Instant.now());
-                e.setLastCheckedAt(Instant.now());
-                repo.save(e);
-            });
-    }
-
-    public List<ExchangeOrderEntity> findAllOpen() {
-        return repo.findByStatusIn(OPEN);
-    }
-
-    // ➕ Новое: последние N FILLED-сделок
     public List<ExchangeOrderEntity> findRecentFilled(Long chatId, String symbol, int limit) {
         return repo.findByChatIdAndSymbolAndStatusOrderByUpdatedAtDesc(
                 chatId, symbol, "FILLED", PageRequest.of(0, Math.max(1, limit)));

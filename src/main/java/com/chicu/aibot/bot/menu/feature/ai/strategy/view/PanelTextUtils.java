@@ -5,16 +5,11 @@ import com.chicu.aibot.trading.trade.model.TradeLogEntry;
 
 import java.math.BigDecimal;
 import java.util.Collection;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
-/**
- * Общие текстовые хелперы для UI-панелей стратегий.
- * Используется и скальпингом, и сеткой Фибоначчи, и Боллинджером.
- */
 public final class PanelTextUtils {
     private PanelTextUtils() {}
-
-    // ------- public helpers used by panels -------
 
     public static String nvl(String s) {
         return (s == null || s.isBlank()) ? "—" : s;
@@ -37,16 +32,16 @@ public final class PanelTextUtils {
         return s + " " + quote;
     }
 
-    /** Блок PnL для последней сделки. Если last == null — возвращает "_нет сделок_". */
+    /** PnL для последней сделки */
     public static String buildPnlBlock(TradeLogEntry last, String symbol, LiveSnapshot live) {
         if (last == null) return "_нет сделок_";
 
         double entry = last.getEntryPrice() != null ? last.getEntryPrice().doubleValue() : 0.0;
-        double qty   = last.getVolume()     != null ? last.getVolume().doubleValue()     : 0.0;
+        double qty   = last.getVolume() != null ? last.getVolume().doubleValue() : 0.0;
         double now   = live.getLastPrice();
 
-        double pnlAbs; // в quote
-        double pnlPct; // в %
+        double pnlAbs;
+        double pnlPct;
         if ("BUY".equalsIgnoreCase(last.getSide())) {
             pnlAbs = (now - entry) * qty;
             pnlPct = entry > 0 ? (now - entry) / entry * 100.0 : 0.0;
@@ -64,9 +59,9 @@ public final class PanelTextUtils {
         String pnlPctS   = signedPct(pnlPct);
 
         return ("""
-               • Последняя: *%s* %s @`%.8f`  qty `%.6f`
+               • Последняя: *%s* %s @`%.8f` qty `%.6f`
                • Вложено: `%s`
-               • PnL: %s `%s`  (%s)
+               • PnL: %s `%s` (%s)
                """).stripTrailing().formatted(
                 last.getSide(), symbol, entry, qty,
                 investedS,
@@ -74,17 +69,25 @@ public final class PanelTextUtils {
         );
     }
 
-    /** Форматирование блока открытых ордеров. */
+    /** Суммарный PnL */
+    public static String formatTotalPnl(Optional<Double> pnlOpt) {
+        String result = "_нет сделок_";
+        if (pnlOpt.isPresent()) {
+            double pnl = pnlOpt.get();
+            result = String.format("💰 Всего PnL: %+.2f USDT", pnl);
+        }
+        return result;
+    }
+
+    /** Блок открытых ордеров */
     public static String formatOpenOrdersBlock(Collection<ExchangeOrderEntity> openOrders) {
-        if (openOrders == null || openOrders.isEmpty()) return "_нет_";
+        if (openOrders == null || openOrders.isEmpty()) return "_нет ордеров_";
         return openOrders.stream()
                 .map(PanelTextUtils::formatOpenOrder)
                 .collect(Collectors.joining("\n"));
     }
 
-    // ------- private -------
-
-    public static String formatOpenOrder(ExchangeOrderEntity e) {
+    private static String formatOpenOrder(ExchangeOrderEntity e) {
         String side   = e.getSide();
         String type   = e.getType();
         BigDecimal price   = e.getPrice();
@@ -96,7 +99,7 @@ public final class PanelTextUtils {
         String filledS = (filled == null) ? "0"   : filled.stripTrailingZeros().toPlainString();
         String qtyS    = (qty == null)    ? "?"   : qty.stripTrailingZeros().toPlainString();
 
-        return String.format("• %s %s qty `%s` @ `%s`  filled `%s`  *%s*  (#%s)",
+        return String.format("• %s %s qty `%s` @ `%s` filled `%s` *%s* (#%s)",
                 side, type, qtyS, priceS, filledS, status, e.getOrderId());
     }
 }

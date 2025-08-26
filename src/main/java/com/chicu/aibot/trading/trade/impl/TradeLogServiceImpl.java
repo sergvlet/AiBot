@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/trading/trade/impl/TradeLogServiceImpl.java
 package com.chicu.aibot.trading.trade.impl;
 
 import com.chicu.aibot.trading.trade.TradeLogEntity;
@@ -6,12 +5,14 @@ import com.chicu.aibot.trading.trade.TradeLogRepository;
 import com.chicu.aibot.trading.trade.TradeLogService;
 import com.chicu.aibot.trading.trade.model.TradeLogEntry;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class TradeLogServiceImpl implements TradeLogService {
 
     private final TradeLogRepository repo;
@@ -47,12 +48,20 @@ public class TradeLogServiceImpl implements TradeLogService {
                 .pnlPct(entry.getPnlPct())
                 .side(entry.getSide())
                 .build();
+
         repo.save(entity);
+        log.info("💾 Записана сделка: chatId={} symbol={} side={} entry={} exit={} pnl={}",
+                entity.getChatId(), entity.getSymbol(), entity.getSide(),
+                entity.getEntryPrice(), entity.getExitPrice(), entity.getPnl());
     }
 
     @Override
     public Optional<Double> getTotalPnl(Long chatId, String symbol) {
         Double sum = repo.sumPnlByChatIdAndSymbol(chatId, symbol);
-        return Optional.ofNullable(sum);
+        if (sum == null) {
+            return Optional.empty();
+        }
+        return Optional.of(sum);
     }
+
 }

@@ -48,36 +48,29 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
     public SendMessage render(Long chatId) {
         FibonacciGridStrategySettings s = settingsService.getOrCreate(chatId);
         String symbol = nvl(s.getSymbol());
-
         LiveSnapshot live = liveService.build(chatId, symbol);
 
-        // ===== Сделки / PnL =====
         Optional<TradeLogEntry> lastTradeOpt = tradeLogService.getLastTrade(chatId, symbol);
-        String pnlBlock = lastTradeOpt
-                .map(last -> buildPnlBlock(last, symbol, live))
-                .orElse("_нет сделок_");
+        String pnlBlock = lastTradeOpt.map(last -> buildPnlBlock(last, symbol, live)).orElse("_нет сделок_");
+        String totalPnlBlock = formatTotalPnl(tradeLogService.getTotalPnl(chatId, symbol));
 
-        double totalPnl = tradeLogService.getTotalPnl(chatId, symbol).orElse(0.0);
-
-        // ===== Ордера =====
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
 
-        // ===== Основной текст =====
         String text = ("""
                 *📊 Fibonacci Grid Strategy*
-                Статус: %s
+                %s
 
                 *Рынок:* `%s`
                 %s Изм.: %s | 💵 Цена: `%s`
 
                 *Баланс:*
-                ⚡ %s: `%s`
-                💵 %s: `%s`
+                • %s: `%s`
+                • %s: `%s`
 
                 *Сделки / PnL:*
                 %s
-                💰 Всего PnL: %+.2f USDT
+                %s
 
                 *Открытые ордера (%d):*
                 %s
@@ -90,23 +83,19 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 • Макс. активных ордеров: `%d`
                 • LONG: %s • SHORT: %s
                 • TP: `%.2f%%` • SL: `%.2f%%`
+                • Статус: *%s*
                 """).stripTrailing().formatted(
                 s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
-
                 symbol,
                 live.getChangePct() >= 0 ? "📈" : "📉",
                 live.getChangeStr(),
                 live.getPriceStr(),
-
                 live.getBase(), live.getBaseBal(),
                 live.getQuote(), live.getQuoteBal(),
-
                 pnlBlock,
-                totalPnl,
-
+                totalPnlBlock,
                 openOrders.size(),
                 openOrdersBlock,
-
                 s.getOrderVolume(),
                 s.getTimeframe(),
                 s.getCachedCandlesLimit(),
@@ -114,10 +103,33 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 s.getMaxActiveOrders(),
                 boolEmoji(s.getAllowLong()), boolEmoji(s.getAllowShort()),
                 s.getTakeProfitPct(),
-                s.getStopLossPct()
+                s.getStopLossPct(),
+                s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
         );
 
-        InlineKeyboardMarkup markup = buildKeyboard(s);
+        InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(
+                List.of(
+                        AdaptiveKeyboard.btn("ℹ️ Описание", BTN_HELP),
+                        AdaptiveKeyboard.btn("⏱ Обновить", BTN_REFRESH),
+                        AdaptiveKeyboard.btn("‹ Назад", "ai_trading")
+                ),
+                List.of(
+                        AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
+                        AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
+                        AdaptiveKeyboard.btn("🧱 Шаг %", BTN_EDIT_GRID),
+                        AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
+                ),
+                List.of(
+                        AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
+                        AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
+                        AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
+                        AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL),
+                        AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
+                ),
+                List.of(
+                        AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить" : "🟢 Запустить", BTN_TOGGLE_ACTIVE)
+                )
+        ), 3);
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
@@ -126,32 +138,5 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 .disableWebPagePreview(true)
                 .replyMarkup(markup)
                 .build();
-    }
-
-    /* ---------- UI helpers ---------- */
-
-    private InlineKeyboardMarkup buildKeyboard(FibonacciGridStrategySettings s) {
-        List<InlineKeyboardButton> g1 = List.of(
-                AdaptiveKeyboard.btn("ℹ️ Описание", BTN_HELP),
-                AdaptiveKeyboard.btn("⏱ Обновить", BTN_REFRESH),
-                AdaptiveKeyboard.btn("‹ Назад", "ai_trading")
-        );
-        List<InlineKeyboardButton> g2 = List.of(
-                AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
-                AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
-                AdaptiveKeyboard.btn("🧱 Шаг %", BTN_EDIT_GRID),
-                AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
-        );
-        List<InlineKeyboardButton> g3 = List.of(
-                AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
-                AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
-                AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
-                AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL),
-                AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
-        );
-        List<InlineKeyboardButton> g4 = List.of(
-                AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить стратегию" : "🟢 Запустить стратегию", BTN_TOGGLE_ACTIVE)
-        );
-        return AdaptiveKeyboard.markupFromGroups(List.of(g1, g2, g3, g4), 3);
     }
 }

@@ -30,7 +30,7 @@ public class OrderExecutionService {
     private final OrderResponseMapperFactory mapperFactory;
 
     private String normalizeStatus(String raw) {
-        if (raw == null) return "";
+        if (raw == null) return "NEW";
         String s = raw.trim().toUpperCase(Locale.ROOT).replace(" ", "").replace("_", "");
         return switch (s) {
             case "FILLED" -> "FILLED";
@@ -154,7 +154,7 @@ public class OrderExecutionService {
 
         orderRepo.save(entity);
 
-        log.info("Сохранён REJECTED ордер: {} {} qty={} причина={}", side, symbol, quantity, reason);
+        log.info("💾 Сохранён REJECTED ордер: {} {} qty={} причина={}", side, symbol, quantity, reason);
         return new Order(entity.getOrderId(), symbol, side, price, 0.0, false, false, false);
     }
 
@@ -167,12 +167,12 @@ public class OrderExecutionService {
                 .exchange(exchange)
                 .network(network)
                 .orderId(resp.getOrderId())
-                .symbol(resp.getSymbol())
+                .symbol(resp.getSymbol() != null ? resp.getSymbol() : "UNKNOWN")
                 .side(side.name())
                 .type(type)
                 .price(resp.getPrice() != null ? resp.getPrice() : BigDecimal.valueOf(price))
                 .quantity(BigDecimal.valueOf(quantity))
-                .executedQty(resp.getExecutedQty())
+                .executedQty(resp.getExecutedQty() != null ? resp.getExecutedQty() : BigDecimal.ZERO)
                 .quoteQty(resp.getPrice() != null && resp.getExecutedQty() != null
                         ? resp.getPrice().multiply(resp.getExecutedQty()) : BigDecimal.ZERO)
                 .commission(resp.getCommission() != null ? resp.getCommission() : BigDecimal.ZERO)
@@ -184,13 +184,16 @@ public class OrderExecutionService {
 
         orderRepo.save(entity);
 
+        log.info("💾 Сохранён ордер {} {} qty={} @{} статус={}",
+                side, entity.getSymbol(), quantity, entity.getPrice(), entity.getStatus());
+
         return new Order(
-                resp.getOrderId(),
-                resp.getSymbol(),
+                entity.getOrderId(),
+                entity.getSymbol(),
                 side,
                 entity.getPrice() != null ? entity.getPrice().doubleValue() : 0.0,
-                resp.getExecutedQty() != null ? resp.getExecutedQty().doubleValue() : 0.0,
-                "FILLED".equalsIgnoreCase(resp.getStatus()),
+                entity.getExecutedQty() != null ? entity.getExecutedQty().doubleValue() : 0.0,
+                "FILLED".equalsIgnoreCase(entity.getStatus()),
                 false,
                 false
         );
