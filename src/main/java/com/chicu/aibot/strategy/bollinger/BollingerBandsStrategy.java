@@ -10,12 +10,15 @@ import com.chicu.aibot.strategy.model.Candle;
 import com.chicu.aibot.strategy.model.Order;
 import com.chicu.aibot.strategy.service.CandleService;
 import com.chicu.aibot.strategy.service.OrderService;
+import com.chicu.aibot.trading.trade.TradeLogService;
+import com.chicu.aibot.trading.trade.model.TradeLogEntry;
 import lombok.RequiredArgsConstructor;
 import lombok.Value;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,6 +32,7 @@ public class BollingerBandsStrategy implements TradingStrategy {
     private final CandleService candleService;
     private final OrderService orderService;
     private final MarketLiveService liveService;
+    private final TradeLogService tradeLogService;
 
     /** Простая «позиция» по чатам: одна активная позиция на чат. */
     private final Map<Long, Position> positions = new ConcurrentHashMap<>();
@@ -72,7 +76,7 @@ public class BollingerBandsStrategy implements TradingStrategy {
 
         if (qty <= 0.0) return; // нечем торговать
 
-        // Берём последние period свечей (как в других стратегиях)
+        // Берём последние period свечей
         List<Candle> candles = candleService.getCandles(chatId, symbol, tf, period);
         if (candles == null || candles.size() < period) return;
 
@@ -93,15 +97,19 @@ public class BollingerBandsStrategy implements TradingStrategy {
         // === ВХОД ===
         if (pos == null) {
             if (Boolean.TRUE.equals(s.getAllowLong()) && lastPrice <= lower) {
-                placeMarketSafe(chatId, symbol, true, qty); // BUY
-                positions.put(chatId, new Position(Side.LONG, lastPrice, qty));
-                log.info("[BOLL] chatId={} LONG open @{} qty={}", chatId, fmt(lastPrice), fmtQty(qty));
+                Order ord = placeMarketSafe(chatId, symbol, true, qty); // BUY
+                if (ord != null && !ord.isRejected()) {
+                    positions.put(chatId, new Position(Side.LONG, lastPrice, qty, Instant.now()));
+                    log.info("[BOLL] chatId={} LONG open @{} qty={}", chatId, fmt(lastPrice), fmtQty(qty));
+                }
                 return;
             }
             if (Boolean.TRUE.equals(s.getAllowShort()) && lastPrice >= upper) {
-                placeMarketSafe(chatId, symbol, false, qty); // SELL
-                positions.put(chatId, new Position(Side.SHORT, lastPrice, qty));
-                log.info("[BOLL] chatId={} SHORT open @{} qty={}", chatId, fmt(lastPrice), fmtQty(qty));
+                Order ord = placeMarketSafe(chatId, symbol, false, qty); // SELL
+                if (ord != null && !ord.isRejected()) {
+                    positions.put(chatId, new Position(Side.SHORT, lastPrice, qty, Instant.now()));
+                    log.info("[BOLL] chatId={} SHORT open @{} qty={}", chatId, fmt(lastPrice), fmtQty(qty));
+                }
                 return;
             }
             return;
@@ -113,20 +121,50 @@ public class BollingerBandsStrategy implements TradingStrategy {
                 boolean takeProfit = lastPrice >= pos.entry * (1.0 + tpFrac);
                 boolean stopLoss   = (slFrac > 0) && lastPrice <= pos.entry * (1.0 - slFrac);
                 if (takeProfit || stopLoss) {
-                    placeMarketSafe(chatId, symbol, false, pos.qty); // SELL
-                    positions.remove(chatId);
-                    double pnlPct = (lastPrice - pos.entry) / pos.entry * 100.0;
-                    log.info("[BOLL] chatId={} LONG close @{} PnL={}%", chatId, fmt(lastPrice), fmtPct(pnlPct));
+                    Order ord = placeMarketSafe(chatId, symbol, false, pos.qty); // SELL
+                    if (ord != null && !ord.isRejected()) {
+                        positions.remove(chatId);
+                        double pnlPct = (lastPrice - pos.entry) / pos.entry * 100.0;
+                        log.info("[BOLL] chatId={} LONG close @{} PnL={}%", chatId, fmt(lastPrice), fmtPct(pnlPct));
+
+                        tradeLogService.logTrade(TradeLogEntry.builder()
+                                .chatId(chatId)
+                                .symbol(symbol)
+                                .openTime(pos.openTime)
+                                .closeTime(Instant.now())
+                                .entryPrice(BigDecimal.valueOf(pos.entry))
+                                .exitPrice(BigDecimal.valueOf(lastPrice))
+                                .volume(BigDecimal.valueOf(pos.qty))
+                                .pnl(BigDecimal.valueOf(lastPrice - pos.entry))
+                                .pnlPct(BigDecimal.valueOf(pnlPct))
+                                .side("LONG")
+                                .build());
+                    }
                 }
             }
             case SHORT -> {
                 boolean takeProfit = lastPrice <= pos.entry * (1.0 - tpFrac);
                 boolean stopLoss   = (slFrac > 0) && lastPrice >= pos.entry * (1.0 + slFrac);
                 if (takeProfit || stopLoss) {
-                    placeMarketSafe(chatId, symbol, true, pos.qty); // BUY
-                    positions.remove(chatId);
-                    double pnlPct = (pos.entry - lastPrice) / pos.entry * 100.0;
-                    log.info("[BOLL] chatId={} SHORT close @{} PnL={}%", chatId, fmt(lastPrice), fmtPct(pnlPct));
+                    Order ord = placeMarketSafe(chatId, symbol, true, pos.qty); // BUY
+                    if (ord != null && !ord.isRejected()) {
+                        positions.remove(chatId);
+                        double pnlPct = (pos.entry - lastPrice) / pos.entry * 100.0;
+                        log.info("[BOLL] chatId={} SHORT close @{} PnL={}%", chatId, fmt(lastPrice), fmtPct(pnlPct));
+
+                        tradeLogService.logTrade(TradeLogEntry.builder()
+                                .chatId(chatId)
+                                .symbol(symbol)
+                                .openTime(pos.openTime)
+                                .closeTime(Instant.now())
+                                .entryPrice(BigDecimal.valueOf(pos.entry))
+                                .exitPrice(BigDecimal.valueOf(lastPrice))
+                                .volume(BigDecimal.valueOf(pos.qty))
+                                .pnl(BigDecimal.valueOf(pos.entry - lastPrice))
+                                .pnlPct(BigDecimal.valueOf(pnlPct))
+                                .side("SHORT")
+                                .build());
+                    }
                 }
             }
         }
@@ -146,6 +184,7 @@ public class BollingerBandsStrategy implements TradingStrategy {
         Side   side;
         double entry;
         double qty;
+        Instant openTime;
     }
     private enum Side { LONG, SHORT }
 
@@ -159,13 +198,14 @@ public class BollingerBandsStrategy implements TradingStrategy {
     private static String fmtQty(double v) { return String.format("%,.6f", v); }
     private static String fmtPct(double v) { return String.format("%.2f", v); }
 
-    private void placeMarketSafe(Long chatId, String symbol, boolean buy, double qty) {
+    private Order placeMarketSafe(Long chatId, String symbol, boolean buy, double qty) {
         try {
-            Order.Side side = buy ? Order.Side.BUY : Order.Side.SELL; // <-- правильный enum
-            orderService.placeMarket(chatId, symbol, side, qty);
+            Order.Side side = buy ? Order.Side.BUY : Order.Side.SELL;
+            return orderService.placeMarket(chatId, symbol, side, qty);
         } catch (Exception e) {
             log.warn("[BOLL] placeMarket failed: chatId={}, symbol={}, side={}, qty={}, err={}",
                     chatId, symbol, (buy ? "BUY" : "SELL"), fmtQty(qty), e.toString());
+            return null;
         }
     }
 

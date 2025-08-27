@@ -1,3 +1,4 @@
+// src/main/java/com/chicu/aibot/strategy/service/impl/OrderExecutionService.java
 package com.chicu.aibot.strategy.service.impl;
 
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
@@ -15,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.UUID;
@@ -28,6 +30,8 @@ public class OrderExecutionService {
     private final ExchangeSettingsService settingsService;
     private final ExchangeOrderRepository orderRepo;
     private final OrderResponseMapperFactory mapperFactory;
+
+    /* ---------- helpers ---------- */
 
     private String normalizeStatus(String raw) {
         if (raw == null) return "NEW";
@@ -49,6 +53,8 @@ public class OrderExecutionService {
                 : com.chicu.aibot.exchange.enums.OrderSide.SELL;
     }
 
+    /* ---------- main ---------- */
+
     @Transactional
     public Order placeLimit(Long chatId, String symbol, Order.Side side, double price, double quantity) {
         var settings = settingsService.getOrCreate(chatId);
@@ -69,20 +75,9 @@ public class OrderExecutionService {
             var mapper  = mapperFactory.getMapper(settings.getExchange());
             resp = mapper.map(rawResp);
         } catch (Exception e) {
-            log.warn("❌ placeLimit отклонён биржей: {} {} qty={} price={} причина={}",
-                    side, symbol, quantity, price, e.getMessage());
-
-            return saveRejected(
-                    chatId,
-                    settings.getExchange().name(),
-                    settings.getNetwork(),
-                    symbol,
-                    side,
-                    "LIMIT",
-                    price,
-                    quantity,
-                    e.getMessage()
-            );
+            log.warn("❌ LIMIT {} {} qty={} price={} ошибка={}", side, symbol, quantity, price, e.getMessage());
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "LIMIT", price, quantity, e.getMessage());
         }
 
         return saveExecuted(chatId, settings.getExchange().name(), settings.getNetwork(),
@@ -108,26 +103,23 @@ public class OrderExecutionService {
             var mapper  = mapperFactory.getMapper(settings.getExchange());
             resp = mapper.map(rawResp);
         } catch (Exception e) {
-            log.warn("❌ placeMarket отклонён биржей: {} {} qty={} причина={}",
-                    side, symbol, quantity, e.getMessage());
-
-            return saveRejected(
-                    chatId,
-                    settings.getExchange().name(),
-                    settings.getNetwork(),
-                    symbol,
-                    side,
-                    "MARKET",
-                    0.0,
-                    quantity,
-                    e.getMessage()
-            );
+            log.warn("❌ MARKET {} {} qty={} ошибка={}", side, symbol, quantity, e.getMessage());
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "MARKET", 0.0, quantity, e.getMessage());
         }
 
-        double usedPrice = (resp.getPrice() != null) ? resp.getPrice().doubleValue() : 0.0;
+        // цена может быть null → fallback
+        double usedPrice = (resp.getPrice() != null)
+                ? resp.getPrice().doubleValue()
+                : (resp.getExecutedQty() != null && resp.getQuoteQty() != null
+                ? resp.getQuoteQty().divide(resp.getExecutedQty(), 8, RoundingMode.HALF_UP).doubleValue()
+                : 0.0);
+
         return saveExecuted(chatId, settings.getExchange().name(), settings.getNetwork(),
                 side, "MARKET", usedPrice, quantity, resp);
     }
+
+    /* ---------- save ---------- */
 
     private Order saveRejected(Long chatId, String exchange, NetworkType network,
                                String symbol, Order.Side side, String type,
@@ -146,22 +138,39 @@ public class OrderExecutionService {
                 .executedQty(BigDecimal.ZERO)
                 .quoteQty(BigDecimal.ZERO)
                 .commission(BigDecimal.ZERO)
-                .commissionAsset("USDT")
+                .commissionAsset("NONE")
                 .status("REJECTED")
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
 
         orderRepo.save(entity);
+        log.info("💾 REJECTED ордер {} {} qty={} причина={}", side, symbol, quantity, reason);
 
-        log.info("💾 Сохранён REJECTED ордер: {} {} qty={} причина={}", side, symbol, quantity, reason);
-        return new Order(entity.getOrderId(), symbol, side, price, 0.0, false, false, false);
+        return new Order(
+                entity.getOrderId(),
+                symbol,
+                side,
+                price,
+                0.0,
+                false,   // filled
+                true,    // cancelled
+                false,   // closed
+                true     // rejected
+        );
     }
 
     private Order saveExecuted(Long chatId, String exchange, NetworkType network,
                                Order.Side side, String type,
                                double price, double quantity, OrderResponse resp) {
         Instant now = Instant.now();
+
+        BigDecimal usedPrice = (resp.getPrice() != null) ? resp.getPrice() : BigDecimal.valueOf(price);
+        BigDecimal usedQty   = (resp.getExecutedQty() != null) ? resp.getExecutedQty() : BigDecimal.valueOf(quantity);
+        BigDecimal quoteQty  = (resp.getQuoteQty() != null)
+                ? resp.getQuoteQty()
+                : usedPrice.multiply(usedQty);
+
         ExchangeOrderEntity entity = ExchangeOrderEntity.builder()
                 .chatId(chatId)
                 .exchange(exchange)
@@ -170,11 +179,10 @@ public class OrderExecutionService {
                 .symbol(resp.getSymbol() != null ? resp.getSymbol() : "UNKNOWN")
                 .side(side.name())
                 .type(type)
-                .price(resp.getPrice() != null ? resp.getPrice() : BigDecimal.valueOf(price))
+                .price(usedPrice)
                 .quantity(BigDecimal.valueOf(quantity))
-                .executedQty(resp.getExecutedQty() != null ? resp.getExecutedQty() : BigDecimal.ZERO)
-                .quoteQty(resp.getPrice() != null && resp.getExecutedQty() != null
-                        ? resp.getPrice().multiply(resp.getExecutedQty()) : BigDecimal.ZERO)
+                .executedQty(usedQty)
+                .quoteQty(quoteQty)
                 .commission(resp.getCommission() != null ? resp.getCommission() : BigDecimal.ZERO)
                 .commissionAsset(resp.getCommissionAsset() != null ? resp.getCommissionAsset() : "UNKNOWN")
                 .status(normalizeStatus(resp.getStatus()))
@@ -184,8 +192,9 @@ public class OrderExecutionService {
 
         orderRepo.save(entity);
 
-        log.info("💾 Сохранён ордер {} {} qty={} @{} статус={}",
-                side, entity.getSymbol(), quantity, entity.getPrice(), entity.getStatus());
+        log.info("💾 Ордер сохранён: {} {} qty={} @{} статус={} комиссия={} {}",
+                side, entity.getSymbol(), entity.getExecutedQty(), entity.getPrice(),
+                entity.getStatus(), entity.getCommission(), entity.getCommissionAsset());
 
         return new Order(
                 entity.getOrderId(),
@@ -193,9 +202,10 @@ public class OrderExecutionService {
                 side,
                 entity.getPrice() != null ? entity.getPrice().doubleValue() : 0.0,
                 entity.getExecutedQty() != null ? entity.getExecutedQty().doubleValue() : 0.0,
-                "FILLED".equalsIgnoreCase(entity.getStatus()),
-                false,
-                false
+                "FILLED".equalsIgnoreCase(entity.getStatus()), // filled
+                false,   // cancelled
+                false,   // closed
+                false    // rejected
         );
     }
 }
