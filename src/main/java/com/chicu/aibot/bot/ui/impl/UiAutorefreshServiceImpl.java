@@ -105,7 +105,7 @@ public class UiAutorefreshServiceImpl implements UiAutorefreshService {
             if (menuService == null) return;
 
             // перерисовываем именно ожидаемую панель
-            SendMessage view = menuService.renderState(expectedPanel, chatId);
+            SendMessage view = (SendMessage) menuService.renderState(expectedPanel, chatId);
             if (view == null) return;
 
             String text = view.getText();

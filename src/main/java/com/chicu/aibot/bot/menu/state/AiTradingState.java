@@ -19,34 +19,41 @@ public class AiTradingState implements MenuState {
 
     public AiTradingState() {
         this.keyboard = InlineKeyboardMarkup.builder()
-            .keyboard(List.of(
+                .keyboard(List.of(
 
-                List.of(InlineKeyboardButton.builder()
-                    .text("📂 Выбор стратегии")
-                    .callbackData("ai_select_strategy")
-                    .build()),
+                        List.of(InlineKeyboardButton.builder()
+                                .text("📂 Выбор стратегии")
+                                .callbackData("ai_select_strategy")
+                                .build()),
 
-                List.of(InlineKeyboardButton.builder()
-                    .text("⚙️ Настройки параметров")
-                    .callbackData("ai_settings_params")
-                    .build()),
+                        List.of(InlineKeyboardButton.builder()
+                                .text("⚙️ Настройки параметров")
+                                .callbackData("ai_settings_params")
+                                .build()),
 
-                List.of(
-                    InlineKeyboardButton.builder()
-                        .text("📈 Статистика")
-                        .callbackData("ai_stats")
-                        .build(),
-                    InlineKeyboardButton.builder()
-                        .text("🔔 Уведомления")
-                        .callbackData("ai_notifications")
-                        .build()
-                ),
-                List.of(InlineKeyboardButton.builder()
-                    .text("⬅️ Назад")
-                    .callbackData("main")
-                    .build())
-            ))
-            .build();
+                        List.of(
+                                InlineKeyboardButton.builder()
+                                        .text("📈 Статистика")
+                                        .callbackData("ai_stats")
+                                        .build(),
+                                InlineKeyboardButton.builder()
+                                        .text("🔔 Уведомления")
+                                        .callbackData("ai_notifications")
+                                        .build()
+                        ),
+
+                        // ✅ Универсальная кнопка управления балансом
+                        List.of(InlineKeyboardButton.builder()
+                                .text("💰 Управление балансом")
+                                .callbackData("balance_menu")
+                                .build()),
+
+                        List.of(InlineKeyboardButton.builder()
+                                .text("⬅️ Назад")
+                                .callbackData("main")
+                                .build())
+                ))
+                .build();
     }
 
     @Override
@@ -58,11 +65,11 @@ public class AiTradingState implements MenuState {
     public SendMessage render(Long chatId) {
         log.info("Рендер AI-меню для chatId={}", chatId);
         return SendMessage.builder()
-            .chatId(chatId.toString())
-            .text("*🤖 AI-торговля*\nВыберите действие:")
-            .parseMode("Markdown")
-            .replyMarkup(keyboard)
-            .build();
+                .chatId(chatId.toString())
+                .text("*🤖 AI-торговля*\nВыберите действие:")
+                .parseMode("Markdown")
+                .replyMarkup(keyboard)
+                .build();
     }
 
     @Override
@@ -73,12 +80,13 @@ public class AiTradingState implements MenuState {
         String data = update.getCallbackQuery().getData();
         log.info("AI-меню: нажата кнопка '{}'", data);
         return switch (data) {
-            case "ai_select_strategy"     -> "ai_select_strategy";
-            case "ai_settings_params"     -> "ai_settings_params";
-            case "ai_stats"               -> "ai_stats";
-            case "ai_notifications"       -> "ai_notifications";
-            case "main"                   -> MenuService.MAIN_MENU;
-            default                       -> {
+            case "ai_select_strategy" -> "ai_select_strategy";
+            case "ai_settings_params" -> "ai_settings_params";
+            case "ai_stats"           -> "ai_stats";
+            case "ai_notifications"   -> "ai_notifications";
+            case "balance_menu"       -> "balance_menu"; // ✅ универсальный переход
+            case "main"               -> MenuService.MAIN_MENU;
+            default -> {
                 log.warn("Неизвестный callback '{}' в AI-меню, остаёмся", data);
                 yield name();
             }

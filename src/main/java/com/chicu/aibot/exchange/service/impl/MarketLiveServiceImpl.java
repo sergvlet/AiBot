@@ -60,7 +60,7 @@ public class MarketLiveServiceImpl implements MarketLiveService {
         String baseBal = "0", quoteBal = "0";
         try {
             AccountInfo ai = client.fetchAccountInfo(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork());
-            for (Balance b : ai.getBalances()) {
+            for (BalanceInfo b : ai.getBalances()) {
                 if (b.getAsset().equalsIgnoreCase(base))  baseBal  = fmt(b.getFree());
                 if (b.getAsset().equalsIgnoreCase(quote)) quoteBal = fmt(b.getFree());
             }

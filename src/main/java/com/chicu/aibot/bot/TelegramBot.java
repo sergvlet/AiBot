@@ -58,7 +58,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         String state = menuService.handleInput(update);
         log.info("Переходим в состояние '{}'", state);
 
-        SendMessage out = menuService.renderState(state, chatId);
+        SendMessage out = (SendMessage) menuService.renderState(state, chatId);
 
         if (update.hasCallbackQuery()) {
             Integer msgId = sessionService.getMenuMessageId(chatId);

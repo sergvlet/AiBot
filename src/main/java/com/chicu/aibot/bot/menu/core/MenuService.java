@@ -20,14 +20,10 @@ public class MenuService {
     private final MenuSessionService sessionService;
     private final List<MenuState> states;
 
-    /**
-     * Хранилище всплывающих уведомлений (например, "⚠️ Не задано значение")
-     */
+    /** Хранилище всплывающих уведомлений */
     private final Map<Long, String> notices = new HashMap<>();
 
-    /**
-     * Имя → объект состояния, наполняется при инициализации
-     */
+    /** Имя → объект состояния */
     private Map<String, MenuState> stateMap;
 
     @PostConstruct
@@ -37,16 +33,12 @@ public class MenuService {
         log.info("✅ MenuService: зарегистрированы состояния: {}", stateMap.keySet());
     }
 
-    /**
-     * Установить отложенное уведомление, которое отобразится при следующем рендер.
-     */
+    /** Установить отложенное уведомление */
     public void deferNotice(Long chatId, String message) {
         notices.put(chatId, message);
     }
 
-    /**
-     * Извлечь и удалить уведомление (если есть).
-     */
+    /** Извлечь и удалить уведомление */
     public Optional<SendMessage> popNotice(Long chatId) {
         String notice = notices.remove(chatId);
         if (notice == null) return Optional.empty();
@@ -59,9 +51,7 @@ public class MenuService {
         );
     }
 
-    /**
-     * Обработка входного обновления: определение следующего состояния и его установка.
-     */
+    /** Обработка входного обновления */
     public String handleInput(Update update) {
         Long chatId = extractChatId(update);
         String current = Optional.ofNullable(sessionService.getCurrentState(chatId))
@@ -76,16 +66,19 @@ public class MenuService {
         return next;
     }
 
-    /**
-     * Отрисовать состояние по имени.
-     */
-    public SendMessage renderState(String state, Long chatId) {
+    /** Отрисовать состояние по имени */
+    public Object renderState(String state, Long chatId) {
         MenuState ms = stateMap.get(state);
         if (ms == null) {
             log.warn("Unknown state in renderState: {}", state);
             ms = stateMap.get(MAIN_MENU);
         }
         return ms.render(chatId);
+    }
+
+    /** 👉 Получить состояние по имени */
+    public MenuState findState(String state) {
+        return stateMap.get(state);
     }
 
     private Long extractChatId(Update u) {

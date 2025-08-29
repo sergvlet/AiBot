@@ -197,10 +197,10 @@ public class BybitExchangeClient implements ExchangeClient {
             currentSecretKey.set(secretKey);
             try {
                 JsonNode list = signedGet(url).path("result").path("list");
-                List<Balance> balances = new ArrayList<>();
+                List<BalanceInfo> balances = new ArrayList<>();
                 for (JsonNode acc : list) {
                     for (JsonNode c : acc.path("coin")) {
-                        balances.add(Balance.builder()
+                        balances.add(BalanceInfo.builder()
                                 .asset(c.path("coin").asText())
                                 .free(new BigDecimal(c.path("availableToWithdraw").asText("0")))
                                 .locked(new BigDecimal(c.path("locked").asText("0")))

@@ -150,7 +150,6 @@ public class BinanceExchangeClient implements ExchangeClient {
             return body;
         } catch (HttpClientErrorException e) {
             if (!isTimestampError(e)) throw e;
-            // re-sync and retry once
             log.warn("{} {} -> -1021 (timestamp), resync and retry once", method, path);
             syncTime(n);
             long ts2 = nowMs(n);
@@ -170,7 +169,6 @@ public class BinanceExchangeClient implements ExchangeClient {
         return sb.toString();
     }
 
-    // ❗ здесь заменил switch(…) с case GET/POST/DELETE на обычный if/else — без стрелочной записи
     private ResponseEntity<String> exchange(HttpMethod m, String url, HttpHeaders headers) {
         if (m == HttpMethod.GET) {
             return doGet(url, headers);
@@ -311,9 +309,9 @@ public class BinanceExchangeClient implements ExchangeClient {
         try {
             String body = signedGet(networkType, "/api/v3/account", "", apiKey, secretKey);
             JsonNode acc = parseJson(body);
-            List<Balance> list = new ArrayList<>();
+            List<BalanceInfo> list = new ArrayList<>();
             for (JsonNode b : acc.path("balances")) {
-                list.add(Balance.builder()
+                list.add(BalanceInfo.builder()
                         .asset(b.path("asset").asText())
                         .free(new BigDecimal(b.path("free").asText("0")))
                         .locked(new BigDecimal(b.path("locked").asText("0")))

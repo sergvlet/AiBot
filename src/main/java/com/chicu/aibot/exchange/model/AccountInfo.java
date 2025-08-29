@@ -9,5 +9,5 @@ import java.util.List;
 @Builder
 public class AccountInfo {
     private String accountId;
-    private List<Balance> balances;
+    private List<BalanceInfo> balances;
 }
