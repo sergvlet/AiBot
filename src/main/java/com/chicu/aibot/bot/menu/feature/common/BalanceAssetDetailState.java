@@ -44,19 +44,6 @@ public class BalanceAssetDetailState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        if (currentAsset == null) {
-            return SendMessage.builder()
-                    .chatId(chatId.toString())
-                    .text("❌ Не указана монета")
-                    .replyMarkup(InlineKeyboardMarkup.builder()
-                            .keyboard(List.of(List.of(
-                                    InlineKeyboardButton.builder()
-                                            .text("⬅️ Назад к списку")
-                                            .callbackData("balance_assets")
-                                            .build()
-                            ))).build())
-                    .build();
-        }
         return buildMessage(chatId, currentAsset, null);
     }
 
@@ -85,19 +72,36 @@ public class BalanceAssetDetailState implements MenuState {
                 if ("SELL".equals(action)) return executeSell(chatId);
                 if ("BUY".equals(action)) return executeBuy(chatId);
             }
-            case "confirm_no" -> {
-                pendingAction.remove(chatId);
-                return name();
-            }
-            case "refresh_balance" -> {
-                return name();
+        }
+
+        if (data.equals("confirm_no")) {
+            pendingAction.remove(chatId);
+            return name();
+        }
+
+        if (data.equals("refresh_balance")) {
+            return name();
+        }
+
+        // закрытие ордера
+        if (data.startsWith("cancel_order:")) {
+            String orderId = data.substring("cancel_order:".length());
+            try {
+                List<Order> active = orderService.loadActiveOrders(chatId, currentAsset + "USDT");
+                active.stream()
+                        .filter(o -> orderId.equals(o.getId()))
+                        .findFirst()
+                        .ifPresent(o -> orderService.cancel(chatId, o));
+                return buildMessage(chatId, currentAsset, "✅ Ордер " + orderId + " закрыт").getText();
+            } catch (Exception e) {
+                return buildMessage(chatId, currentAsset, "❌ Ошибка при закрытии ордера: " + e.getMessage()).getText();
             }
         }
 
         return name();
     }
 
-    /** Выполнить конвертацию монеты в USDT */
+    /** Конвертация монеты в USDT */
     private String executeSell(Long chatId) {
         String result;
         try {
@@ -116,8 +120,7 @@ public class BalanceAssetDetailState implements MenuState {
                 if (free.compareTo(BigDecimal.ZERO) > 0) {
                     String symbol = currentAsset + "USDT";
                     orderService.placeMarket(chatId, symbol, Order.Side.SELL, free.doubleValue());
-                    result = "✅ Успешно конвертировано " + free.stripTrailingZeros().toPlainString()
-                            + " " + currentAsset + " → USDT";
+                    result = "✅ Конвертировано " + free.stripTrailingZeros() + " " + currentAsset + " → USDT";
                 } else {
                     result = "⚠️ Недостаточный баланс для конвертации.";
                 }
@@ -125,14 +128,12 @@ public class BalanceAssetDetailState implements MenuState {
                 result = "❌ Баланс по " + currentAsset + " не найден.";
             }
         } catch (Exception e) {
-            log.error("Ошибка при конвертации {} → USDT: {}", currentAsset, e.getMessage(), e);
             result = "❌ Ошибка при конвертации: " + e.getMessage();
         }
-        // ✅ теперь возвращаем просто name(), а результат передаём как notice
         return buildMessage(chatId, currentAsset, result).getText();
     }
 
-    /** Выполнить покупку монеты на весь баланс USDT */
+    /** Покупка монеты за USDT */
     private String executeBuy(Long chatId) {
         String result;
         try {
@@ -151,8 +152,7 @@ public class BalanceAssetDetailState implements MenuState {
                 if (freeUsdt.compareTo(BigDecimal.ZERO) > 0) {
                     String symbol = currentAsset + "USDT";
                     orderService.placeMarket(chatId, symbol, Order.Side.BUY, freeUsdt.doubleValue());
-                    result = "✅ Куплено " + currentAsset + " на "
-                            + freeUsdt.stripTrailingZeros().toPlainString() + " USDT";
+                    result = "✅ Куплено " + currentAsset + " на " + freeUsdt.stripTrailingZeros() + " USDT";
                 } else {
                     result = "⚠️ Недостаточный баланс USDT для покупки.";
                 }
@@ -160,70 +160,84 @@ public class BalanceAssetDetailState implements MenuState {
                 result = "❌ Баланс USDT не найден.";
             }
         } catch (Exception e) {
-            log.error("Ошибка при покупке {} за USDT: {}", currentAsset, e.getMessage(), e);
             result = "❌ Ошибка при покупке: " + e.getMessage();
         }
         return buildMessage(chatId, currentAsset, result).getText();
     }
 
+    /** Рендер баланса + кнопок */
     private SendMessage buildMessage(Long chatId, String asset, String notice) {
+        if (asset == null) {
+            return SendMessage.builder().chatId(chatId.toString()).text("❌ Монета не выбрана").build();
+        }
+
         var settings = settingsService.getOrCreate(chatId);
         var keys = settingsService.getApiKey(chatId);
         ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
-        Optional<BalanceInfo> balanceOpt = Optional.empty();
+        StringBuilder text = new StringBuilder();
+        text.append("💰 *Баланс монеты ").append(asset).append("*\n\n");
+
+        BigDecimal free = BigDecimal.ZERO;
+        BigDecimal locked = BigDecimal.ZERO;
+        BigDecimal total = BigDecimal.ZERO;
+        BigDecimal usdValue = BigDecimal.ZERO;
+        List<Order> active = Collections.emptyList();
+
         try {
             AccountInfo acc = client.fetchAccountInfo(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork());
-            balanceOpt = acc.getBalances().stream()
+            Optional<BalanceInfo> balanceOpt = acc.getBalances().stream()
                     .filter(b -> asset.equalsIgnoreCase(b.getAsset()))
                     .findFirst();
-        } catch (Exception e) {
-            log.error("Ошибка загрузки баланса {}: {}", asset, e.getMessage());
-        }
 
-        String text;
-        if (balanceOpt.isPresent()) {
-            BalanceInfo b = balanceOpt.get();
-            BigDecimal free = b.getFree().setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
-            BigDecimal locked = b.getLocked().setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
-            BigDecimal total = free.add(locked);
+            if (balanceOpt.isPresent()) {
+                BalanceInfo b = balanceOpt.get();
+                free = b.getFree().setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
+                locked = b.getLocked().setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
+                total = free.add(locked);
 
-            BigDecimal usdValue = BigDecimal.ZERO;
-            if (!"USDT".equalsIgnoreCase(asset)) {
-                try {
-                    String symbol = asset + "USDT";
-                    Optional<TickerInfo> ticker = client.getTicker(symbol, settings.getNetwork());
+                if (!"USDT".equalsIgnoreCase(asset)) {
+                    Optional<TickerInfo> ticker = client.getTicker(asset + "USDT", settings.getNetwork());
                     if (ticker.isPresent()) {
                         usdValue = total.multiply(ticker.get().getPrice()).setScale(2, RoundingMode.HALF_UP);
                     }
-                } catch (Exception e) {
-                    log.warn("Не удалось получить цену {} в USDT: {}", asset, e.getMessage());
+                } else {
+                    usdValue = total.setScale(2, RoundingMode.HALF_UP);
                 }
-            } else {
-                usdValue = total.setScale(2, RoundingMode.HALF_UP);
             }
 
-            text = String.format(
-                    """
-                    💰 *Баланс монеты %s*
-                    
-                    Свободно: `%s`
-                    Заблокировано: `%s`
-                    Всего: `%s`
-                    
-                    💵 ~ Стоимость в USDT: *%s*""",
-                    b.getAsset(),
-                    free.toPlainString(),
-                    locked.toPlainString(),
-                    total.toPlainString(),
-                    usdValue.toPlainString()
-            );
-        } else {
-            text = "❌ Баланс для монеты `" + asset + "` не найден";
+            // ордера
+            active = orderService.loadActiveOrders(chatId, asset + "USDT");
+
+        } catch (Exception e) {
+            log.error("Ошибка загрузки данных: {}", e.getMessage());
         }
 
+        text.append("Свободно: `").append(free).append("`\n");
+        text.append("Заблокировано: `").append(locked).append("`\n");
+
+        if (!active.isEmpty()) {
+            text.append("📌 *Активные ордера:*\n");
+            for (Order o : active) {
+                text.append("• ").append(o.getSide())
+                        .append(" ").append(o.getVolume())
+                        .append(" @ ").append(o.getPrice())
+                        .append(o.isFilled() ? " ✅" : " ⏳")
+                        .append(" (id=").append(o.getId()).append(")\n");
+            }
+        } else {
+            if (locked.compareTo(BigDecimal.ZERO) > 0) {
+                text.append("📌 Ордеров нет (биржа показывает locked=").append(locked).append(")\n");
+            } else {
+                text.append("📌 Активных ордеров нет\n");
+            }
+        }
+
+        text.append("Всего: `").append(total).append("`\n");
+        text.append("💵 ~ В USDT: *").append(usdValue).append("*\n");
+
         if (notice != null) {
-            text += "\n\n" + notice;
+            text.append("\n").append(notice);
         }
 
         // --- кнопки ---
@@ -234,13 +248,11 @@ public class BalanceAssetDetailState implements MenuState {
                     InlineKeyboardButton.builder().text("✅ Да, продать").callbackData("confirm_yes").build(),
                     InlineKeyboardButton.builder().text("❌ Отмена").callbackData("confirm_no").build()
             ));
-            text += "\n\n⚠️ Подтвердите продажу *" + asset + "* → USDT";
         } else if ("BUY".equals(pendingAction.get(chatId))) {
             rows.add(List.of(
                     InlineKeyboardButton.builder().text("✅ Да, купить").callbackData("confirm_yes").build(),
                     InlineKeyboardButton.builder().text("❌ Отмена").callbackData("confirm_no").build()
             ));
-            text += "\n\n⚠️ Подтвердите покупку *" + asset + "* за USDT";
         } else {
             if (!"USDT".equalsIgnoreCase(asset)) {
                 rows.add(List.of(
@@ -252,11 +264,20 @@ public class BalanceAssetDetailState implements MenuState {
                     InlineKeyboardButton.builder().text("🔄 Обновить").callbackData("refresh_balance").build(),
                     InlineKeyboardButton.builder().text("⬅️ Назад").callbackData("balance_assets").build()
             ));
+
+            for (Order o : active) {
+                rows.add(List.of(
+                        InlineKeyboardButton.builder()
+                                .text("❌ Закрыть ордер " + o.getId())
+                                .callbackData("cancel_order:" + o.getId())
+                                .build()
+                ));
+            }
         }
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
-                .text(text)
+                .text(text.toString())
                 .parseMode("Markdown")
                 .replyMarkup(InlineKeyboardMarkup.builder().keyboard(rows).build())
                 .build();
