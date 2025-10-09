@@ -1,14 +1,15 @@
-// src/main/java/com/chicu/aibot/strategy/service/impl/OrderExecutionService.java
 package com.chicu.aibot.strategy.service.impl;
 
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
 import com.chicu.aibot.exchange.enums.NetworkType;
-import com.chicu.aibot.exchange.mapper.OrderResponseMapperFactory;
 import com.chicu.aibot.exchange.model.OrderRequest;
 import com.chicu.aibot.exchange.model.OrderResponse;
+import com.chicu.aibot.exchange.model.SymbolFilters;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.repository.ExchangeOrderRepository;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
+import com.chicu.aibot.exchange.service.PriceService;
+import com.chicu.aibot.exchange.service.SymbolFiltersService;
 import com.chicu.aibot.strategy.model.Order;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -29,9 +30,12 @@ public class OrderExecutionService {
     private final ExchangeClientFactory clientFactory;
     private final ExchangeSettingsService settingsService;
     private final ExchangeOrderRepository orderRepo;
-    private final OrderResponseMapperFactory mapperFactory;
 
-    /* ---------- helpers ---------- */
+    // пред-проверки цены/фильтров
+    private final SymbolFiltersService symbolFiltersService;
+    private final PriceService priceService;
+
+    /* ---------- utils ---------- */
 
     private String normalizeStatus(String raw) {
         if (raw == null) return "NEW";
@@ -53,7 +57,13 @@ public class OrderExecutionService {
                 : com.chicu.aibot.exchange.enums.OrderSide.SELL;
     }
 
-    /* ---------- main ---------- */
+    private static BigDecimal roundToStep(BigDecimal qty, BigDecimal step) {
+        if (qty == null || qty.signum() <= 0) return BigDecimal.ZERO;
+        if (step == null || step.signum() <= 0) return qty;
+        return qty.divide(step, 0, RoundingMode.DOWN).multiply(step);
+    }
+
+    /* ---------- LIMIT ---------- */
 
     @Transactional
     public Order placeLimit(Long chatId, String symbol, Order.Side side, double price, double quantity) {
@@ -61,28 +71,54 @@ public class OrderExecutionService {
         var keys     = settingsService.getApiKey(chatId);
         var client   = clientFactory.getClient(settings.getExchange());
 
+        SymbolFilters filters = symbolFiltersService.getFilters(settings.getExchange(), symbol, settings.getNetwork());
+        BigDecimal stepSize   = filters.getStepSize();
+        BigDecimal minQty     = filters.getMinQty();
+        BigDecimal minNotional= filters.getMinNotional();
+
+        BigDecimal p = BigDecimal.valueOf(price);
+        BigDecimal q = roundToStep(BigDecimal.valueOf(quantity), stepSize);
+
+        if (q.compareTo(BigDecimal.ZERO) <= 0) {
+            log.warn("⛔️ Пропускаем LIMIT {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "LIMIT", price, 0.0, "Qty <= 0");
+        }
+        if (minQty != null && q.compareTo(minQty) < 0) {
+            log.warn("⛔️ Пропускаем LIMIT {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "LIMIT", price, q.doubleValue(), "Qty < minQty");
+        }
+        if (minNotional != null && q.multiply(p).compareTo(minNotional) < 0) {
+            log.warn("⛔️ Пропускаем LIMIT {} {}: notional < minNotional ({} < {})",
+                    side, symbol, q.multiply(p), minNotional);
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "LIMIT", price, q.doubleValue(), "Notional < minNotional");
+        }
+
         var req = OrderRequest.builder()
                 .symbol(symbol)
                 .side(mapSide(side))
                 .type(com.chicu.aibot.exchange.enums.OrderType.LIMIT)
-                .price(BigDecimal.valueOf(price))
-                .quantity(BigDecimal.valueOf(quantity))
+                .price(p)
+                .quantity(q)
                 .build();
 
         OrderResponse resp;
         try {
-            var rawResp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
-            var mapper  = mapperFactory.getMapper(settings.getExchange());
-            resp = mapper.map(rawResp);
+            // ВАЖНО: клиент уже возвращает OrderResponse — ничего маппить не нужно
+            resp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
         } catch (Exception e) {
-            log.warn("❌ LIMIT {} {} qty={} price={} ошибка={}", side, symbol, quantity, price, e.getMessage());
+            log.warn("❌ LIMIT {} {} qty={} price={} ошибка={}", side, symbol, q, p, e.getMessage());
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "LIMIT", price, quantity, e.getMessage());
+                    symbol, side, "LIMIT", price, q.doubleValue(), e.getMessage());
         }
 
         return saveExecuted(chatId, settings.getExchange().name(), settings.getNetwork(),
-                side, "LIMIT", price, quantity, resp);
+                side, "LIMIT", p.doubleValue(), q.doubleValue(), resp);
     }
+
+    /* ---------- MARKET ---------- */
 
     @Transactional
     public Order placeMarket(Long chatId, String symbol, Order.Side side, double quantity) {
@@ -90,36 +126,66 @@ public class OrderExecutionService {
         var keys     = settingsService.getApiKey(chatId);
         var client   = clientFactory.getClient(settings.getExchange());
 
+        // фильтры + текущая цена для notional
+        SymbolFilters filters = symbolFiltersService.getFilters(settings.getExchange(), symbol, settings.getNetwork());
+        BigDecimal price      = priceService.getLastPrice(settings.getExchange(), symbol, settings.getNetwork());
+        BigDecimal stepSize   = filters.getStepSize();
+        BigDecimal minQty     = filters.getMinQty();
+        BigDecimal minNotional= filters.getMinNotional();
+
+        BigDecimal q = roundToStep(BigDecimal.valueOf(quantity), stepSize);
+
+        if (q.compareTo(BigDecimal.ZERO) <= 0) {
+            log.warn("⛔️ Пропускаем MARKET {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "MARKET", price != null ? price.doubleValue() : 0.0,
+                    0.0, "Qty <= 0");
+        }
+        if (minQty != null && q.compareTo(minQty) < 0) {
+            log.warn("⛔️ Пропускаем MARKET {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "MARKET", price != null ? price.doubleValue() : 0.0,
+                    q.doubleValue(), "Qty < minQty");
+        }
+        if (price != null && minNotional != null && q.multiply(price).compareTo(minNotional) < 0) {
+            log.warn("⛔️ Пропускаем MARKET {} {}: notional < minNotional ({} < {})",
+                    side, symbol, q.multiply(price), minNotional);
+            return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                    symbol, side, "MARKET", price.doubleValue(), q.doubleValue(),
+                    "Notional < minNotional");
+        }
+
         var req = OrderRequest.builder()
                 .symbol(symbol)
                 .side(mapSide(side))
                 .type(com.chicu.aibot.exchange.enums.OrderType.MARKET)
-                .quantity(BigDecimal.valueOf(quantity))
+                .quantity(q)
                 .build();
 
         OrderResponse resp;
         try {
-            var rawResp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
-            var mapper  = mapperFactory.getMapper(settings.getExchange());
-            resp = mapper.map(rawResp);
+            // ВАЖНО: клиент уже возвращает OrderResponse — ничего маппить не нужно
+            resp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
         } catch (Exception e) {
-            log.warn("❌ MARKET {} {} qty={} ошибка={}", side, symbol, quantity, e.getMessage());
+            log.warn("❌ MARKET {} {} qty={} ошибка={}", side, symbol, q, e.getMessage());
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "MARKET", 0.0, quantity, e.getMessage());
+                    symbol, side, "MARKET",
+                    price != null ? price.doubleValue() : 0.0,
+                    q.doubleValue(), e.getMessage());
         }
 
-        // цена может быть null → fallback
+        // фактическая цена (если биржа её не дала — оцениваем по тикеру)
         double usedPrice = (resp.getPrice() != null)
                 ? resp.getPrice().doubleValue()
                 : (resp.getExecutedQty() != null && resp.getQuoteQty() != null
                 ? resp.getQuoteQty().divide(resp.getExecutedQty(), 8, RoundingMode.HALF_UP).doubleValue()
-                : 0.0);
+                : (price != null ? price.doubleValue() : 0.0));
 
         return saveExecuted(chatId, settings.getExchange().name(), settings.getNetwork(),
-                side, "MARKET", usedPrice, quantity, resp);
+                side, "MARKET", usedPrice, q.doubleValue(), resp);
     }
 
-    /* ---------- save ---------- */
+    /* ---------- persistence ---------- */
 
     private Order saveRejected(Long chatId, String exchange, NetworkType network,
                                String symbol, Order.Side side, String type,
@@ -175,7 +241,7 @@ public class OrderExecutionService {
                 .chatId(chatId)
                 .exchange(exchange)
                 .network(network)
-                .orderId(resp.getOrderId())
+                .orderId(resp.getOrderId() != null ? resp.getOrderId() : ("LOCAL-" + UUID.randomUUID()))
                 .symbol(resp.getSymbol() != null ? resp.getSymbol() : "UNKNOWN")
                 .side(side.name())
                 .type(type)
@@ -202,10 +268,10 @@ public class OrderExecutionService {
                 side,
                 entity.getPrice() != null ? entity.getPrice().doubleValue() : 0.0,
                 entity.getExecutedQty() != null ? entity.getExecutedQty().doubleValue() : 0.0,
-                "FILLED".equalsIgnoreCase(entity.getStatus()), // filled
-                false,   // cancelled
-                false,   // closed
-                false    // rejected
+                "FILLED".equalsIgnoreCase(entity.getStatus()),
+                false,
+                false,
+                false
         );
     }
 }
