@@ -1,7 +1,9 @@
 package com.chicu.aibot.strategy.service.impl;
 
+import com.chicu.aibot.exchange.client.ExchangeClient;
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
 import com.chicu.aibot.exchange.enums.NetworkType;
+import com.chicu.aibot.exchange.model.OrderInfo;
 import com.chicu.aibot.exchange.model.OrderRequest;
 import com.chicu.aibot.exchange.model.OrderResponse;
 import com.chicu.aibot.exchange.model.SymbolFilters;
@@ -20,6 +22,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -63,13 +66,17 @@ public class OrderExecutionService {
         return qty.divide(step, 0, RoundingMode.DOWN).multiply(step);
     }
 
+    private static double bdToDouble(BigDecimal v) {
+        return v == null ? 0.0 : v.doubleValue();
+    }
+
     /* ---------- LIMIT ---------- */
 
     @Transactional
     public Order placeLimit(Long chatId, String symbol, Order.Side side, double price, double quantity) {
         var settings = settingsService.getOrCreate(chatId);
         var keys     = settingsService.getApiKey(chatId);
-        var client   = clientFactory.getClient(settings.getExchange());
+        ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
         SymbolFilters filters = symbolFiltersService.getFilters(settings.getExchange(), symbol, settings.getNetwork());
         BigDecimal stepSize   = filters.getStepSize();
@@ -106,7 +113,6 @@ public class OrderExecutionService {
 
         OrderResponse resp;
         try {
-            // ВАЖНО: клиент уже возвращает OrderResponse — ничего маппить не нужно
             resp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
         } catch (Exception e) {
             log.warn("❌ LIMIT {} {} qty={} price={} ошибка={}", side, symbol, q, p, e.getMessage());
@@ -114,8 +120,23 @@ public class OrderExecutionService {
                     symbol, side, "LIMIT", price, q.doubleValue(), e.getMessage());
         }
 
+        // Попробуем запросить детали ордера (avg price, executed, финальный статус)
+        OrderInfo fetched = fetchOrderSafe(client, keys.getPublicKey(), keys.getSecretKey(),
+                settings.getNetwork(), symbol, resp.getOrderId());
+
+        BigDecimal usedPrice = (fetched != null && fetched.getAvgPrice() != null && fetched.getAvgPrice().signum() > 0)
+                ? fetched.getAvgPrice()
+                : p;
+
+        BigDecimal executedQty = (fetched != null && fetched.getExecutedQty() != null)
+                ? fetched.getExecutedQty()
+                : (resp.getExecutedQty() != null ? resp.getExecutedQty() : BigDecimal.ZERO);
+
+        String status = fetched != null ? fetched.getStatus() : resp.getStatus();
+
         return saveExecuted(chatId, settings.getExchange().name(), settings.getNetwork(),
-                side, "LIMIT", p.doubleValue(), q.doubleValue(), resp);
+                side, "LIMIT", bdToDouble(usedPrice), q.doubleValue(), resp.getOrderId(),
+                resp.getSymbol(), executedQty, status);
     }
 
     /* ---------- MARKET ---------- */
@@ -124,11 +145,11 @@ public class OrderExecutionService {
     public Order placeMarket(Long chatId, String symbol, Order.Side side, double quantity) {
         var settings = settingsService.getOrCreate(chatId);
         var keys     = settingsService.getApiKey(chatId);
-        var client   = clientFactory.getClient(settings.getExchange());
+        ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
         // фильтры + текущая цена для notional
         SymbolFilters filters = symbolFiltersService.getFilters(settings.getExchange(), symbol, settings.getNetwork());
-        BigDecimal price      = priceService.getLastPrice(settings.getExchange(), symbol, settings.getNetwork());
+        BigDecimal lastPrice  = priceService.getLastPrice(settings.getExchange(), symbol, settings.getNetwork());
         BigDecimal stepSize   = filters.getStepSize();
         BigDecimal minQty     = filters.getMinQty();
         BigDecimal minNotional= filters.getMinNotional();
@@ -138,21 +159,18 @@ public class OrderExecutionService {
         if (q.compareTo(BigDecimal.ZERO) <= 0) {
             log.warn("⛔️ Пропускаем MARKET {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "MARKET", price != null ? price.doubleValue() : 0.0,
-                    0.0, "Qty <= 0");
+                    symbol, side, "MARKET", bdToDouble(lastPrice), 0.0, "Qty <= 0");
         }
         if (minQty != null && q.compareTo(minQty) < 0) {
             log.warn("⛔️ Пропускаем MARKET {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "MARKET", price != null ? price.doubleValue() : 0.0,
-                    q.doubleValue(), "Qty < minQty");
+                    symbol, side, "MARKET", bdToDouble(lastPrice), q.doubleValue(), "Qty < minQty");
         }
-        if (price != null && minNotional != null && q.multiply(price).compareTo(minNotional) < 0) {
+        if (lastPrice != null && minNotional != null && q.multiply(lastPrice).compareTo(minNotional) < 0) {
             log.warn("⛔️ Пропускаем MARKET {} {}: notional < minNotional ({} < {})",
-                    side, symbol, q.multiply(price), minNotional);
+                    side, symbol, q.multiply(lastPrice), minNotional);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "MARKET", price.doubleValue(), q.doubleValue(),
-                    "Notional < minNotional");
+                    symbol, side, "MARKET", bdToDouble(lastPrice), q.doubleValue(), "Notional < minNotional");
         }
 
         var req = OrderRequest.builder()
@@ -164,25 +182,43 @@ public class OrderExecutionService {
 
         OrderResponse resp;
         try {
-            // ВАЖНО: клиент уже возвращает OrderResponse — ничего маппить не нужно
             resp = client.placeOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), req);
         } catch (Exception e) {
             log.warn("❌ MARKET {} {} qty={} ошибка={}", side, symbol, q, e.getMessage());
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "MARKET",
-                    price != null ? price.doubleValue() : 0.0,
-                    q.doubleValue(), e.getMessage());
+                    symbol, side, "MARKET", bdToDouble(lastPrice), q.doubleValue(), e.getMessage());
         }
 
-        // фактическая цена (если биржа её не дала — оцениваем по тикеру)
-        double usedPrice = (resp.getPrice() != null)
-                ? resp.getPrice().doubleValue()
-                : (resp.getExecutedQty() != null && resp.getQuoteQty() != null
-                ? resp.getQuoteQty().divide(resp.getExecutedQty(), 8, RoundingMode.HALF_UP).doubleValue()
-                : (price != null ? price.doubleValue() : 0.0));
+        // Дотягиваем фактические данные (avg price, executed, статус)
+        OrderInfo fetched = fetchOrderSafe(client, keys.getPublicKey(), keys.getSecretKey(),
+                settings.getNetwork(), symbol, resp.getOrderId());
+
+        BigDecimal usedPrice = (fetched != null && fetched.getAvgPrice() != null && fetched.getAvgPrice().signum() > 0)
+                ? fetched.getAvgPrice()
+                : (lastPrice != null ? lastPrice : BigDecimal.ZERO);
+
+        BigDecimal executedQty = (fetched != null && fetched.getExecutedQty() != null)
+                ? fetched.getExecutedQty()
+                : (resp.getExecutedQty() != null ? resp.getExecutedQty() : q); // fallback — заданный объём
+
+        String status = fetched != null ? fetched.getStatus() : resp.getStatus();
 
         return saveExecuted(chatId, settings.getExchange().name(), settings.getNetwork(),
-                side, "MARKET", usedPrice, q.doubleValue(), resp);
+                side, "MARKET", bdToDouble(usedPrice), q.doubleValue(), resp.getOrderId(),
+                resp.getSymbol(), executedQty, status);
+    }
+
+    private OrderInfo fetchOrderSafe(ExchangeClient client,
+                                     String apiKey, String secretKey, NetworkType net,
+                                     String symbol, String orderId) {
+        if (orderId == null || symbol == null) return null;
+        try {
+            Optional<OrderInfo> opt = client.fetchOrder(apiKey, secretKey, net, symbol, orderId);
+            return opt.orElse(null);
+        } catch (Exception e) {
+            log.debug("fetchOrderSafe({}, {}) error: {}", symbol, orderId, e.getMessage());
+            return null;
+        }
     }
 
     /* ---------- persistence ---------- */
@@ -228,30 +264,31 @@ public class OrderExecutionService {
 
     private Order saveExecuted(Long chatId, String exchange, NetworkType network,
                                Order.Side side, String type,
-                               double price, double quantity, OrderResponse resp) {
+                               double priceUsed, double quantityRequested,
+                               String orderId, String respSymbol,
+                               BigDecimal executedQty, String rawStatus) {
         Instant now = Instant.now();
 
-        BigDecimal usedPrice = (resp.getPrice() != null) ? resp.getPrice() : BigDecimal.valueOf(price);
-        BigDecimal usedQty   = (resp.getExecutedQty() != null) ? resp.getExecutedQty() : BigDecimal.valueOf(quantity);
-        BigDecimal quoteQty  = (resp.getQuoteQty() != null)
-                ? resp.getQuoteQty()
-                : usedPrice.multiply(usedQty);
+        String status = normalizeStatus(rawStatus);
+        BigDecimal usedPrice = BigDecimal.valueOf(priceUsed);
+        BigDecimal qtyReq    = BigDecimal.valueOf(quantityRequested);
+        BigDecimal execQty   = executedQty != null ? executedQty : BigDecimal.ZERO;
 
         ExchangeOrderEntity entity = ExchangeOrderEntity.builder()
                 .chatId(chatId)
                 .exchange(exchange)
                 .network(network)
-                .orderId(resp.getOrderId() != null ? resp.getOrderId() : ("LOCAL-" + UUID.randomUUID()))
-                .symbol(resp.getSymbol() != null ? resp.getSymbol() : "UNKNOWN")
+                .orderId(orderId != null ? orderId : ("LOCAL-" + UUID.randomUUID()))
+                .symbol(respSymbol != null ? respSymbol : "UNKNOWN")
                 .side(side.name())
                 .type(type)
                 .price(usedPrice)
-                .quantity(BigDecimal.valueOf(quantity))
-                .executedQty(usedQty)
-                .quoteQty(quoteQty)
-                .commission(resp.getCommission() != null ? resp.getCommission() : BigDecimal.ZERO)
-                .commissionAsset(resp.getCommissionAsset() != null ? resp.getCommissionAsset() : "UNKNOWN")
-                .status(normalizeStatus(resp.getStatus()))
+                .quantity(qtyReq)
+                .executedQty(execQty)
+                .quoteQty(usedPrice.multiply(execQty))
+                .commission(BigDecimal.ZERO)           // нет из ответа — оставляем 0
+                .commissionAsset("UNKNOWN")
+                .status(status != null ? status : "NEW")
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
@@ -266,12 +303,12 @@ public class OrderExecutionService {
                 entity.getOrderId(),
                 entity.getSymbol(),
                 side,
-                entity.getPrice() != null ? entity.getPrice().doubleValue() : 0.0,
-                entity.getExecutedQty() != null ? entity.getExecutedQty().doubleValue() : 0.0,
+                bdToDouble(entity.getPrice()),
+                bdToDouble(entity.getExecutedQty()),
                 "FILLED".equalsIgnoreCase(entity.getStatus()),
+                "CANCELED".equalsIgnoreCase(entity.getStatus()) || "EXPIRED".equalsIgnoreCase(entity.getStatus()),
                 false,
-                false,
-                false
+                "REJECTED".equalsIgnoreCase(entity.getStatus())
         );
     }
 }

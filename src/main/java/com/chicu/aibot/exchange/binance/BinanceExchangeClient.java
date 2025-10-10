@@ -57,10 +57,20 @@ public class BinanceExchangeClient implements ExchangeClient {
         return URLEncoder.encode(v, StandardCharsets.UTF_8);
     }
 
+    /** Заголовки для GET: Content-Type не выставляем, только API key и Accept. */
     private HttpHeaders apiKeyHeader(String apiKey) {
         HttpHeaders h = new HttpHeaders();
         h.set("X-MBX-APIKEY", apiKey);
+        h.setAccept(List.of(MediaType.APPLICATION_JSON));
+        return h;
+    }
+
+    /** Заголовки для POST/DELETE: form Content-Type только здесь. */
+    private HttpHeaders apiKeyFormHeader(String apiKey) {
+        HttpHeaders h = new HttpHeaders();
+        h.set("X-MBX-APIKEY", apiKey);
         h.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+        h.setAccept(List.of(MediaType.APPLICATION_JSON));
         return h;
     }
 
@@ -77,15 +87,17 @@ public class BinanceExchangeClient implements ExchangeClient {
     }
 
     private ResponseEntity<String> doGet(String url, HttpHeaders headers) {
-        return rest.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), String.class);
+        // Никакого body для GET
+        return rest.exchange(url, HttpMethod.GET, new HttpEntity<Void>(headers), String.class);
     }
 
     private ResponseEntity<String> doPost(String url, HttpHeaders headers) {
-        return rest.exchange(url, HttpMethod.POST, new HttpEntity<>((String) null, headers), String.class);
+        // Пустое body строкой для корректной отправки с form Content-Type
+        return rest.exchange(url, HttpMethod.POST, new HttpEntity<>("", headers), String.class);
     }
 
     private ResponseEntity<String> doDelete(String url, HttpHeaders headers) {
-        return rest.exchange(url, HttpMethod.DELETE, new HttpEntity<>((String) null, headers), String.class);
+        return rest.exchange(url, HttpMethod.DELETE, new HttpEntity<>("", headers), String.class);
     }
 
     /* ==== time sync ==== */
@@ -123,7 +135,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     private static boolean isTimestampError(Throwable e) {
         if (e instanceof HttpClientErrorException he) {
             String body = he.getResponseBodyAsString();
-            return body.contains("\"code\":-1021");
+            return body != null && body.contains("\"code\":-1021");
         }
         return false;
     }
@@ -138,34 +150,47 @@ public class BinanceExchangeClient implements ExchangeClient {
             HttpMethod method
     ) {
         String base = baseUrl(n) + path;
-        String body;
-        long ts = nowMs(n);
 
-        String q1 = buildQuery(partialQuery, ts);
+        String pq = (partialQuery == null) ? "" : partialQuery.trim();
+        if (pq.endsWith("&")) {
+            pq = pq.substring(0, pq.length() - 1); // убрать хвостовой &
+        }
+
+        long ts = nowMs(n);
+        String q1 = buildQuery(pq, ts);
         String sig1 = sign(secretKey, q1);
         String url1 = base + "?" + q1 + "&signature=" + sig1;
 
+        HttpHeaders headers = (method == HttpMethod.POST || method == HttpMethod.DELETE)
+                ? apiKeyFormHeader(apiKey)
+                : apiKeyHeader(apiKey);
+
         try {
-            body = exchange(method, url1, apiKeyHeader(apiKey)).getBody();
-            return body;
+            if (log.isDebugEnabled()) log.debug("BINANCE {} {}", method, url1);
+            return exchange(method, url1, headers).getBody();
         } catch (HttpClientErrorException e) {
             if (!isTimestampError(e)) throw e;
             log.warn("{} {} -> -1021 (timestamp), resync and retry once", method, path);
             syncTime(n);
             long ts2 = nowMs(n);
-            String q2 = buildQuery(partialQuery, ts2);
+            String q2 = buildQuery(pq, ts2);
             String sig2 = sign(secretKey, q2);
             String url2 = base + "?" + q2 + "&signature=" + sig2;
-            return exchange(method, url2, apiKeyHeader(apiKey)).getBody();
+            if (log.isDebugEnabled()) log.debug("BINANCE RETRY {} {}", method, url2);
+            return exchange(method, url2, headers).getBody();
         }
     }
 
     private String buildQuery(String partialQuery, long timestamp) {
-        String base = (partialQuery == null || partialQuery.isBlank()) ? "" : partialQuery;
         StringBuilder sb = new StringBuilder();
-        if (!base.isBlank()) sb.append(base).append("&");
+        if (partialQuery != null && !partialQuery.isBlank()) {
+            sb.append(partialQuery);
+            if (partialQuery.charAt(partialQuery.length() - 1) != '&') {
+                sb.append('&');
+            }
+        }
         sb.append("recvWindow=").append(RECV_WINDOW)
-                .append("&timestamp=").append(timestamp);
+          .append("&timestamp=").append(timestamp);
         return sb.toString();
     }
 
@@ -411,8 +436,8 @@ public class BinanceExchangeClient implements ExchangeClient {
                     }
 
                     pq.append("&quantity=").append(qty.stripTrailingZeros().toPlainString())
-                            .append("&price=").append(priceNorm.stripTrailingZeros().toPlainString())
-                            .append("&timeInForce=GTC");
+                      .append("&price=").append(priceNorm.stripTrailingZeros().toPlainString())
+                      .append("&timeInForce=GTC");
                 }
                 default -> {}
             }
@@ -487,7 +512,6 @@ public class BinanceExchangeClient implements ExchangeClient {
         return fetchPopularSymbols();
     }
 
-
     @Override
     public Optional<TickerInfo> getTicker(String symbol, NetworkType networkType) {
         try {
@@ -498,6 +522,7 @@ public class BinanceExchangeClient implements ExchangeClient {
             return Optional.of(TickerInfo.builder().price(last).changePct(pct).build());
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode() == HttpStatus.BAD_REQUEST &&
+                e.getResponseBodyAsString() != null &&
                 e.getResponseBodyAsString().contains("Invalid symbol")) {
                 log.warn("❌ Символ {} недоступен на Binance {}", symbol, networkType);
                 return Optional.empty();
@@ -508,6 +533,7 @@ public class BinanceExchangeClient implements ExchangeClient {
             return Optional.empty();
         }
     }
+
     @Override
     public List<Candle> fetchCandles(String apiKey, String secretKey, NetworkType n, String symbol, String interval, int limit) {
         try {
