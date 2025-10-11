@@ -3,10 +3,7 @@ package com.chicu.aibot.strategy.service.impl;
 import com.chicu.aibot.exchange.client.ExchangeClient;
 import com.chicu.aibot.exchange.client.ExchangeClientFactory;
 import com.chicu.aibot.exchange.enums.NetworkType;
-import com.chicu.aibot.exchange.model.OrderInfo;
-import com.chicu.aibot.exchange.model.OrderRequest;
-import com.chicu.aibot.exchange.model.OrderResponse;
-import com.chicu.aibot.exchange.model.SymbolFilters;
+import com.chicu.aibot.exchange.model.*;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.repository.ExchangeOrderRepository;
 import com.chicu.aibot.exchange.service.ExchangeSettingsService;
@@ -70,6 +67,18 @@ public class OrderExecutionService {
         return v == null ? 0.0 : v.doubleValue();
     }
 
+    /** Определяет базовый актив по известным суффиксам (USDT, USDC, BUSD, BTC, ETH и т.д.) */
+    private static String extractBaseAsset(String symbol) {
+        if (symbol == null) return "UNKNOWN";
+        String[] knownQuotes = {"USDT","USDC","BUSD","FDUSD","TUSD","DAI","BTC","ETH","BNB","TRY","EUR","JPY","BIDR","AUD","BRL","GBP","RUB","UAH"};
+        for (String q : knownQuotes) {
+            if (symbol.endsWith(q)) {
+                return symbol.substring(0, symbol.length() - q.length());
+            }
+        }
+        return symbol; // fallback
+    }
+
     /* ---------- LIMIT ---------- */
 
     @Transactional
@@ -107,7 +116,7 @@ public class OrderExecutionService {
                 .symbol(symbol)
                 .side(mapSide(side))
                 .type(com.chicu.aibot.exchange.enums.OrderType.LIMIT)
-                .price(p)
+                .price(BigDecimal.valueOf(price))
                 .quantity(q)
                 .build();
 
@@ -120,7 +129,7 @@ public class OrderExecutionService {
                     symbol, side, "LIMIT", price, q.doubleValue(), e.getMessage());
         }
 
-        // Попробуем запросить детали ордера (avg price, executed, финальный статус)
+        // Подтянем финальные данные (avg price, executed, статус)
         OrderInfo fetched = fetchOrderSafe(client, keys.getPublicKey(), keys.getSecretKey(),
                 settings.getNetwork(), symbol, resp.getOrderId());
 
@@ -155,6 +164,31 @@ public class OrderExecutionService {
         BigDecimal minNotional= filters.getMinNotional();
 
         BigDecimal q = roundToStep(BigDecimal.valueOf(quantity), stepSize);
+
+        // Для MARKET SELL с qty=0 продаём весь доступный базовый актив (определяем базу из символа)
+        if (side == Order.Side.SELL && q.compareTo(BigDecimal.ZERO) <= 0) {
+            try {
+                AccountInfo acc = client.fetchAccountInfo(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork());
+                String baseAsset = extractBaseAsset(symbol);
+                BigDecimal baseFree = acc.getBalances().stream()
+                        .filter(b -> baseAsset.equalsIgnoreCase(b.getAsset()))
+                        .map(BalanceInfo::getFree)
+                        .findFirst()
+                        .orElse(BigDecimal.ZERO);
+
+                q = roundToStep(baseFree, stepSize);
+                log.info("MARKET SELL {} без qty -> используем весь свободный баланс {} = {}", symbol, baseAsset, q);
+
+                if (q.compareTo(BigDecimal.ZERO) <= 0) {
+                    return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                            symbol, side, "MARKET", bdToDouble(lastPrice), 0.0, "Base balance is zero");
+                }
+            } catch (Exception e) {
+                log.warn("Не удалось получить баланс для MARKET SELL {}: {}", symbol, e.getMessage());
+                return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
+                        symbol, side, "MARKET", bdToDouble(lastPrice), 0.0, "Failed to fetch base balance");
+            }
+        }
 
         if (q.compareTo(BigDecimal.ZERO) <= 0) {
             log.warn("⛔️ Пропускаем MARKET {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
@@ -199,7 +233,7 @@ public class OrderExecutionService {
 
         BigDecimal executedQty = (fetched != null && fetched.getExecutedQty() != null)
                 ? fetched.getExecutedQty()
-                : (resp.getExecutedQty() != null ? resp.getExecutedQty() : q); // fallback — заданный объём
+                : (resp.getExecutedQty() != null ? resp.getExecutedQty() : q); // fallback — заданный/подставленный объём
 
         String status = fetched != null ? fetched.getStatus() : resp.getStatus();
 
@@ -286,7 +320,7 @@ public class OrderExecutionService {
                 .quantity(qtyReq)
                 .executedQty(execQty)
                 .quoteQty(usedPrice.multiply(execQty))
-                .commission(BigDecimal.ZERO)           // нет из ответа — оставляем 0
+                .commission(BigDecimal.ZERO)
                 .commissionAsset("UNKNOWN")
                 .status(status != null ? status : "NEW")
                 .createdAt(now)
