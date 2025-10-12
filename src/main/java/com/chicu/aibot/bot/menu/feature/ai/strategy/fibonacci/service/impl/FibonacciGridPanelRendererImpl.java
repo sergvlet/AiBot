@@ -14,12 +14,15 @@ import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 
-import java.text.NumberFormat;
+import java.text.DecimalFormat;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.boolEmoji;
-import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.nvl;
+import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.onOff;
 
 @Component
 @RequiredArgsConstructor
@@ -44,25 +47,29 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
     private final TradeLogService tradeLogService;
     private final ExchangeOrderDbService orderDb;
 
+    private static final DateTimeFormatter TS_FMT =
+            DateTimeFormatter.ofPattern("dd.MM HH:mm")
+                    .withLocale(Locale.forLanguageTag("ru-RU"))
+                    .withZone(ZoneId.systemDefault());
+
     @Override
     public SendMessage render(Long chatId) {
         FibonacciGridStrategySettings s = settingsService.getOrCreate(chatId);
         String symbol = nvl(s.getSymbol());
         LiveSnapshot live = liveService.build(chatId, symbol);
 
-        // Total PnL (из TradeLogService), безопасное форматирование
-        String totalPnlBlock = tradeLogService.getTotalPnl(chatId, symbol)
-                .map(this::formatSignedPercent)
-                .map(v -> "*Итоговый PnL:* `" + v + "`")
-                .orElse("_нет данных по PnL_");
+        // Лёгкий текст вместо “последней сделки” (реальные сделки показываем ниже блоком FILLED)
+        String recentHint = "_см. ниже блок «Последние исполненные ордера»_";
 
-        // Последняя сделка — показываем просто как «Есть/Нет», чтобы не зависеть от полей TradeLogEntry
-        String lastTradeBlock = tradeLogService.getLastTrade(chatId, symbol).isPresent()
-                ? "последняя сделка: `есть`"
-                : "_нет сделок_";
+        // Итоговый PnL — принимаем Optional<?> (поддержит Optional<Double> и Optional<String>)
+        String totalPnlBlock = formatTotalPnl(tradeLogService.getTotalPnl(chatId, symbol));
 
+        // Открытые ордера
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
+
+        // Недавние исполненные ордера
+        String recentTradesBlock = formatRecentFills(chatId, symbol, 5);
 
         String text = ("""
                 *📊 Fibonacci Grid Strategy*
@@ -79,6 +86,9 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 %s
                 %s
 
+                *Последние исполненные ордера:*
+                %s
+
                 *Открытые ордера (%d):*
                 %s
 
@@ -91,7 +101,7 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 • LONG: %s • SHORT: %s
                 • TP: `%.2f%%` • SL: `%.2f%%`
                 • Статус: *%s*
-                """).formatted(
+                """).stripTrailing().formatted(
                 s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
                 symbol,
                 live.getChangePct() >= 0 ? "📈" : "📉",
@@ -99,20 +109,21 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 live.getPriceStr(),
                 live.getBase(), live.getBaseBal(),
                 live.getQuote(), live.getQuoteBal(),
-                lastTradeBlock,
+                recentHint,
                 totalPnlBlock,
+                recentTradesBlock,
                 openOrders.size(),
                 openOrdersBlock,
-                s.getOrderVolume(),
-                s.getTimeframe(),
-                s.getCachedCandlesLimit(),
-                s.getGridSizePct(),
-                s.getMaxActiveOrders(),
+                nvl(s.getOrderVolume(), 0.0),
+                nvl(s.getTimeframe(), "1m"),
+                nvl(s.getCachedCandlesLimit(), 500),
+                nvl(s.getGridSizePct(), 0.8),
+                nvl(s.getMaxActiveOrders(), 3),
                 boolEmoji(s.getAllowLong()), boolEmoji(s.getAllowShort()),
-                s.getTakeProfitPct(),
-                s.getStopLossPct(),
+                nvl(s.getTakeProfitPct(), 0.6),
+                nvl(s.getStopLossPct(), 0.8),
                 s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
-        ).stripTrailing();
+        );
 
         InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(
                 List.of(
@@ -121,20 +132,20 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                         AdaptiveKeyboard.btn("‹ Назад", "ai_trading")
                 ),
                 List.of(
-                        AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
-                        AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
-                        AdaptiveKeyboard.btn("🧱 Шаг %", BTN_EDIT_GRID),
-                        AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
+                    AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
+                    AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
+                    AdaptiveKeyboard.btn("🧱 Шаг %", BTN_EDIT_GRID),
+                    AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
                 ),
                 List.of(
-                        AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
-                        AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
-                        AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
-                        AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL),
-                        AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
+                    AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
+                    AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
+                    AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
+                    AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL),
+                    AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
                 ),
                 List.of(
-                        AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить" : "🟢 Запустить", BTN_TOGGLE_ACTIVE)
+                    AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить" : "🟢 Запустить", BTN_TOGGLE_ACTIVE)
                 )
         ), 3);
 
@@ -147,31 +158,63 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 .build();
     }
 
-    private String onOff(Boolean b) {
-        return Boolean.TRUE.equals(b) ? "ON" : "OFF";
-    }
+    /* ================= helpers ================= */
 
-    private String formatSignedPercent(double v) {
-        // Локаль RU для разделителей, но без deprecated конструкторов
-        NumberFormat nf = NumberFormat.getNumberInstance(Locale.forLanguageTag("ru-RU"));
-        nf.setMinimumFractionDigits(2);
-        nf.setMaximumFractionDigits(2);
-        String num = nf.format(Math.abs(v));
-        return (v >= 0 ? "+" : "−") + num + "%";
-    }
+    /** Печать последних FILLED из БД. */
+    private String formatRecentFills(Long chatId, String symbol, int limit) {
+        // Сервисный метод ожидаем такого вида:
+        //   List<ExchangeOrderEntity> findRecentFilled(Long chatId, String symbol, int limit)
+        List<ExchangeOrderEntity> filled = orderDb.findRecentFilled(chatId, symbol, limit);
+        if (filled == null || filled.isEmpty()) return "_нет сделок_";
 
-    private String formatOpenOrdersBlock(List<ExchangeOrderEntity> list) {
-        if (list == null || list.isEmpty()) return "_нет ордеров_";
         StringBuilder sb = new StringBuilder();
-        for (ExchangeOrderEntity o : list) {
-            sb.append("• ")
-              .append(o.getSide()).append(" ").append(o.getType())
-              .append(" qty `").append(nvl(String.valueOf(o.getQuantity()))).append('`')
-              .append(" @ `").append(nvl(String.valueOf(o.getPrice()))).append('`')
-              .append(" filled `").append(nvl(String.valueOf(o.getExecutedQty()))).append('`')
-              .append(" *").append(o.getStatus()).append("* ")
-              .append("(#").append(nvl(o.getOrderId())).append(")\n");
+        for (ExchangeOrderEntity o : filled) {
+            String ts = (o.getUpdatedAt() != null) ? TS_FMT.format(o.getUpdatedAt()) : "—";
+            sb.append("• ").append(nvl(o.getSide()))
+              .append(" `").append(nz(o.getQuantity())).append('`')
+              .append(" @ `").append(nz(o.getPrice())).append('`')
+              .append(" *FILLED* ")
+              .append("(`#").append(nvl(o.getOrderId())).append("`)")
+              .append(" _( ").append(ts).append(" )_")
+              .append('\n');
         }
         return sb.toString().stripTrailing();
     }
+
+    /** Открытые ордера. */
+    private static String formatOpenOrdersBlock(List<ExchangeOrderEntity> open) {
+        if (open == null || open.isEmpty()) return "_нет открытых ордеров_";
+        StringBuilder sb = new StringBuilder();
+        for (ExchangeOrderEntity o : open) {
+            sb.append("• ")
+              .append(nvl(o.getSide())).append(' ').append(nvl(o.getType()))
+              .append(" qty `").append(nz(o.getQuantity())).append('`')
+              .append(" @ `").append(nz(o.getPrice())).append('`')
+              .append(" filled `").append(nz(o.getExecutedQty())).append('`')
+              .append(' ').append(nvl(o.getStatus()))
+              .append(" (`#").append(nvl(o.getOrderId())).append("`)")
+              .append('\n');
+        }
+        return sb.toString().stripTrailing();
+    }
+
+    /** Форматируем итоговый PnL из Optional<Double> или Optional<String>. */
+    private static String formatTotalPnl(Optional<?> totalPnlOpt) {
+        if (totalPnlOpt == null || totalPnlOpt.isEmpty()) return "_нет данных по PnL_";
+        Object v = totalPnlOpt.get();
+        if (v instanceof Number num) {
+            // красиво отформатируем число
+            DecimalFormat df = (DecimalFormat) DecimalFormat.getNumberInstance(Locale.forLanguageTag("ru-RU"));
+            df.applyPattern("#,##0.##");
+            return "*Итоговый PnL:* " + df.format(num.doubleValue());
+        }
+        return "*Итоговый PnL:* " + v;
+    }
+
+    // безопасные mini-NVL’ы (перегрузки)
+    private static String nvl(String s) { return (s == null) ? "" : s; }
+    private static String nvl(String s, String def) { return (s == null || s.isBlank()) ? def : s; }
+    private static int nvl(Integer v, int def) { return v == null ? def : v; }
+    private static double nvl(Double v, double def) { return v == null ? def : v; }
+    private static String nz(Object v) { return v == null ? "0" : v.toString(); }
 }
