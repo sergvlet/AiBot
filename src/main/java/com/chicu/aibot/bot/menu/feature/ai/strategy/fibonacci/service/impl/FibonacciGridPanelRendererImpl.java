@@ -9,17 +9,17 @@ import com.chicu.aibot.exchange.service.MarketLiveService;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
 import com.chicu.aibot.trading.trade.TradeLogService;
-import com.chicu.aibot.trading.trade.model.TradeLogEntry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
+import java.text.NumberFormat;
 import java.util.List;
-import java.util.Optional;
+import java.util.Locale;
 
-import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.*;
+import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.boolEmoji;
+import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.nvl;
 
 @Component
 @RequiredArgsConstructor
@@ -50,9 +50,16 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
         String symbol = nvl(s.getSymbol());
         LiveSnapshot live = liveService.build(chatId, symbol);
 
-        Optional<TradeLogEntry> lastTradeOpt = tradeLogService.getLastTrade(chatId, symbol);
-        String pnlBlock = lastTradeOpt.map(last -> buildPnlBlock(last, symbol, live)).orElse("_нет сделок_");
-        String totalPnlBlock = formatTotalPnl(tradeLogService.getTotalPnl(chatId, symbol));
+        // Total PnL (из TradeLogService), безопасное форматирование
+        String totalPnlBlock = tradeLogService.getTotalPnl(chatId, symbol)
+                .map(this::formatSignedPercent)
+                .map(v -> "*Итоговый PnL:* `" + v + "`")
+                .orElse("_нет данных по PnL_");
+
+        // Последняя сделка — показываем просто как «Есть/Нет», чтобы не зависеть от полей TradeLogEntry
+        String lastTradeBlock = tradeLogService.getLastTrade(chatId, symbol).isPresent()
+                ? "последняя сделка: `есть`"
+                : "_нет сделок_";
 
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
@@ -84,7 +91,7 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 • LONG: %s • SHORT: %s
                 • TP: `%.2f%%` • SL: `%.2f%%`
                 • Статус: *%s*
-                """).stripTrailing().formatted(
+                """).formatted(
                 s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
                 symbol,
                 live.getChangePct() >= 0 ? "📈" : "📉",
@@ -92,7 +99,7 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 live.getPriceStr(),
                 live.getBase(), live.getBaseBal(),
                 live.getQuote(), live.getQuoteBal(),
-                pnlBlock,
+                lastTradeBlock,
                 totalPnlBlock,
                 openOrders.size(),
                 openOrdersBlock,
@@ -105,7 +112,7 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 s.getTakeProfitPct(),
                 s.getStopLossPct(),
                 s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
-        );
+        ).stripTrailing();
 
         InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(
                 List.of(
@@ -138,5 +145,33 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 .disableWebPagePreview(true)
                 .replyMarkup(markup)
                 .build();
+    }
+
+    private String onOff(Boolean b) {
+        return Boolean.TRUE.equals(b) ? "ON" : "OFF";
+    }
+
+    private String formatSignedPercent(double v) {
+        // Локаль RU для разделителей, но без deprecated конструкторов
+        NumberFormat nf = NumberFormat.getNumberInstance(Locale.forLanguageTag("ru-RU"));
+        nf.setMinimumFractionDigits(2);
+        nf.setMaximumFractionDigits(2);
+        String num = nf.format(Math.abs(v));
+        return (v >= 0 ? "+" : "−") + num + "%";
+    }
+
+    private String formatOpenOrdersBlock(List<ExchangeOrderEntity> list) {
+        if (list == null || list.isEmpty()) return "_нет ордеров_";
+        StringBuilder sb = new StringBuilder();
+        for (ExchangeOrderEntity o : list) {
+            sb.append("• ")
+              .append(o.getSide()).append(" ").append(o.getType())
+              .append(" qty `").append(nvl(String.valueOf(o.getQuantity()))).append('`')
+              .append(" @ `").append(nvl(String.valueOf(o.getPrice()))).append('`')
+              .append(" filled `").append(nvl(String.valueOf(o.getExecutedQty()))).append('`')
+              .append(" *").append(o.getStatus()).append("* ")
+              .append("(#").append(nvl(o.getOrderId())).append(")\n");
+        }
+        return sb.toString().stripTrailing();
     }
 }

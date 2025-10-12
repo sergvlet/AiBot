@@ -8,6 +8,7 @@ import com.chicu.aibot.strategy.model.Candle;
 import com.chicu.aibot.strategy.model.Order;
 import com.chicu.aibot.strategy.service.CandleService;
 import com.chicu.aibot.strategy.service.OrderService;
+import com.chicu.aibot.strategy.service.OrderHousekeeperService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,9 @@ public class FibonacciGridStrategy implements TradingStrategy {
     private final CandleService candleService;
     private final OrderService orderService;
 
+    /** Уборщик ордеров: удаляет «мертвые», дубликаты и лишние пер-сторону */
+    private final OrderHousekeeperService orderHousekeeperService;
+
     /** Активные ордера для каждого чата (in-memory кэш) */
     private final Map<Long, List<Order>> activeOrders = new HashMap<>();
 
@@ -41,7 +45,8 @@ public class FibonacciGridStrategy implements TradingStrategy {
         // подтягиваем уже открытые ордера с биржи, чтобы не плодить дубликаты после рестарта
         try {
             FibonacciGridStrategySettings cfg = settingsService.getOrCreate(chatId);
-            List<Order> fromExchange = orderService.loadActiveOrders(chatId, cfg.getSymbol());
+            String symbol = nvl(cfg.getSymbol(), "ETHUSDT");
+            List<Order> fromExchange = orderService.loadActiveOrders(chatId, symbol);
             if (fromExchange != null && !fromExchange.isEmpty()) {
                 // в кэш только не отменённые/не закрытые
                 List<Order> cleaned = fromExchange.stream()
@@ -64,7 +69,11 @@ public class FibonacciGridStrategy implements TradingStrategy {
             for (Order o : orders) {
                 // отменяем только то, что реально открыто и не закрыто
                 if (!o.isCancelled() && !o.isClosed() && !o.isFilled()) {
-                    orderService.cancel(chatId, o);
+                    try {
+                        orderService.cancel(chatId, o);
+                    } catch (Exception ex) {
+                        log.debug("Cancel failed (ignored): {}", ex.getMessage());
+                    }
                 }
             }
         }
@@ -74,13 +83,14 @@ public class FibonacciGridStrategy implements TradingStrategy {
     @Override
     public void onPriceUpdate(Long chatId, double currentPrice) {
         FibonacciGridStrategySettings cfg = settingsService.getOrCreate(chatId);
+        String symbol = nvl(cfg.getSymbol(), "ETHUSDT");
 
         // берём копию текущего кэша, работаем с ней (потом заменим атомарно)
         List<Order> cache = new ArrayList<>(activeOrders.computeIfAbsent(chatId, k -> new ArrayList<>()));
 
         // 0) Актуализируем статусы ордеров, чтобы уловить FILLED/EXPIRED/CANCELED и т.п.
         try {
-            orderService.refreshOrderStatuses(chatId, cfg.getSymbol(), cache);
+            orderService.refreshOrderStatuses(chatId, symbol, cache);
         } catch (Throwable t) {
             log.debug("refreshOrderStatuses недоступен/упал: {}", t.getMessage());
         }
@@ -88,20 +98,20 @@ public class FibonacciGridStrategy implements TradingStrategy {
         // 1) Свечи
         List<Candle> candles = candleService.getCandles(
                 chatId,
-                cfg.getSymbol(),
-                cfg.getTimeframe(),
-                cfg.getCachedCandlesLimit()
+                symbol,
+                nvl(cfg.getTimeframe(), "1m"),
+                nvl(cfg.getCachedCandlesLimit(), 500)
         );
 
         if (candles == null || candles.isEmpty()) {
-            log.warn("Свечи не получены: chatId={}, symbol={}, tf={}", chatId, cfg.getSymbol(), cfg.getTimeframe());
+            log.warn("Свечи не получены: chatId={}, symbol={}, tf={}", chatId, symbol, cfg.getTimeframe());
             // подчистим локальный кэш от отменённых/закрытых и вернём
             cache.removeIf(o -> o.isCancelled() || o.isClosed());
             activeOrders.put(chatId, cache);
             return;
         }
 
-        // 2) Мин/макс
+        // 2) Мин/макс за окно
         double minPrice = candles.stream()
                 .map(Candle::getLow)
                 .filter(Objects::nonNull)
@@ -119,15 +129,15 @@ public class FibonacciGridStrategy implements TradingStrategy {
         double range = maxPrice - minPrice;
         if (range <= 0) {
             log.debug("Нулевой диапазон цен: min={} max={} chatId={}", minPrice, maxPrice, chatId);
-            // подчистим и вернём
             cache.removeIf(o -> o.isCancelled() || o.isClosed());
             activeOrders.put(chatId, cache);
             return;
         }
 
         // 3) Уровни Фибо
-        List<Double> fibPrices = new ArrayList<>();
-        for (Double level : cfg.getLevels()) {
+        List<Double> levels = cfg.getLevels() == null ? List.of(0.236, 0.382, 0.5, 0.618, 0.786) : cfg.getLevels();
+        List<Double> fibPrices = new ArrayList<>(levels.size());
+        for (Double level : levels) {
             double v = minPrice + level * range;
             fibPrices.add(v);
         }
@@ -161,26 +171,27 @@ public class FibonacciGridStrategy implements TradingStrategy {
             if (!already) {
                 Order o = orderService.placeLimit(
                         chatId,
-                        cfg.getSymbol(),
+                        symbol,
                         side,
                         priceLevel,
-                        cfg.getOrderVolume()
+                        nvl(cfg.getOrderVolume(), 0.1) // дефолт, если null
                 );
-                cache.add(o);
-                placed++;
-                log.info("Выставлен лимитный ордер: chatId={}, side={}, price={}, qty={}",
-                        chatId, side, priceLevel, cfg.getOrderVolume());
+                if (o != null) {
+                    cache.add(o);
+                    placed++;
+                    log.info("Выставлен лимитный ордер: chatId={}, side={}, price={}, qty={}",
+                            chatId, side, priceLevel, cfg.getOrderVolume());
+                }
             }
         }
 
-        // 5) TP/SL только по ПОЛНОСТЬЮ ИСПОЛНЕННЫМ ордерам.
-        //    Это устраняет ошибки с объёмами (мы умышленно не используем executedQty в Order).
+        // 5) TP/SL только по ПОЛНОСТЬЮ ИСПОЛНЕННЫМ ордерам (избегаем путаницы с частичными объёмами)
         List<Order> filledOrders = cache.stream()
                 .filter(Order::isFilled)
                 .toList();
 
         double totalVol = filledOrders.stream()
-                .mapToDouble(Order::getVolume) // здесь volume = origQty, но для FILLED это корректно
+                .mapToDouble(Order::getVolume) // для FILLED это полный объём
                 .sum();
 
         if (totalVol > 0) {
@@ -189,14 +200,18 @@ public class FibonacciGridStrategy implements TradingStrategy {
                     .sum();
             double avgEntry = value / totalVol;
 
-            double tp = avgEntry * (1 + cfg.getTakeProfitPct() / 100.0);
-            double sl = avgEntry * (1 - cfg.getStopLossPct()   / 100.0);
+            double tp = avgEntry * (1 + nvl(cfg.getTakeProfitPct(), 0.6) / 100.0);
+            double sl = avgEntry * (1 - nvl(cfg.getStopLossPct(), 0.8)   / 100.0);
 
             if (currentPrice >= tp || currentPrice <= sl) {
                 // закрываем только FILLED (точно знаем полный объём)
                 for (Order o : new ArrayList<>(filledOrders)) {
                     if (!o.isClosed() && !o.isCancelled()) {
-                        orderService.closePosition(chatId, o);
+                        try {
+                            orderService.closePosition(chatId, o);
+                        } catch (Exception ex) {
+                            log.debug("closePosition failed (ignored): {}", ex.getMessage());
+                        }
                     }
                 }
                 log.info("Достигнут TP/SL: avgEntry={}, tp={}, sl={}, current={}. Позиции закрыты.",
@@ -207,19 +222,48 @@ public class FibonacciGridStrategy implements TradingStrategy {
         // 6) Обновляем кэш: выкидываем отменённые/закрытые
         cache.removeIf(o -> o.isCancelled() || o.isClosed());
         activeOrders.put(chatId, cache);
+
+        // 7) HOUSEKEEPER: чистим дубли, «мертвые» и лишние (пер-сторону) на бирже и в БД
+        try {
+            int perSideLimit = (cfg.getMaxActiveOrders() == null || cfg.getMaxActiveOrders() <= 0)
+                    ? Integer.MAX_VALUE
+                    : cfg.getMaxActiveOrders();
+            var hk = orderHousekeeperService.reconcile(chatId, symbol, perSideLimit);
+            if (hk.getRemovedDb() > 0 || hk.getCancelled() > 0) {
+                log.info("FIB HK[{}:{}]: removedDb={}, cancelled={}, left BUY={}, SELL={}",
+                        chatId, symbol, hk.getRemovedDb(), hk.getCancelled(), hk.getBuyActive(), hk.getSellActive());
+            }
+        } catch (Throwable t) {
+            log.warn("FIB HK failed [{}:{}]: {}", chatId, symbol, t.getMessage());
+        }
     }
 
     @Override
     public double getCurrentPrice(Long chatId) {
         FibonacciGridStrategySettings cfg = settingsService.getOrCreate(chatId);
+        String symbol = nvl(cfg.getSymbol(), "ETHUSDT");
         List<Candle> candles = candleService.getCandles(
                 chatId,
-                cfg.getSymbol(),
-                cfg.getTimeframe(),
+                symbol,
+                nvl(cfg.getTimeframe(), "1m"),
                 1
         );
         if (candles == null || candles.isEmpty()) return 0.0;
-        Candle last = candles.getLast();
+        Candle last = candles.get(candles.size() - 1);
         return last.getClose() == null ? 0.0 : last.getClose().doubleValue();
+    }
+
+    /* ================= helpers ================= */
+
+    private static String nvl(String s, String def) {
+        return (s == null || s.isBlank()) ? def : s;
+    }
+
+    private static int nvl(Integer v, int def) {
+        return v == null ? def : v;
+    }
+
+    private static double nvl(Double v, double def) {
+        return v == null ? def : v;
     }
 }

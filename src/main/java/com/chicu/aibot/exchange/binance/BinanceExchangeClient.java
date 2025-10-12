@@ -135,7 +135,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     private static boolean isTimestampError(Throwable e) {
         if (e instanceof HttpClientErrorException he) {
             String body = he.getResponseBodyAsString();
-            return body != null && body.contains("\"code\":-1021");
+            return body.contains("\"code\":-1021");
         }
         return false;
     }
@@ -521,11 +521,12 @@ public class BinanceExchangeClient implements ExchangeClient {
             BigDecimal pct  = new BigDecimal(t.path("priceChangePercent").asText("0"));
             return Optional.of(TickerInfo.builder().price(last).changePct(pct).build());
         } catch (HttpClientErrorException e) {
-            if (e.getStatusCode() == HttpStatus.BAD_REQUEST &&
-                e.getResponseBodyAsString() != null &&
-                e.getResponseBodyAsString().contains("Invalid symbol")) {
-                log.warn("❌ Символ {} недоступен на Binance {}", symbol, networkType);
-                return Optional.empty();
+            if (e.getStatusCode() == HttpStatus.BAD_REQUEST) {
+                e.getResponseBodyAsString();
+                if (e.getResponseBodyAsString().contains("Invalid symbol")) {
+                    log.warn("❌ Символ {} недоступен на Binance {}", symbol, networkType);
+                    return Optional.empty();
+                }
             }
             throw e;
         } catch (Exception e) {

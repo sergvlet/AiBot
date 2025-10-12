@@ -24,6 +24,8 @@ public class ScalpingStrategy implements TradingStrategy {
     private final OrderService orderService;
 
     private final Map<Long, List<Order>> activeOrders = new HashMap<>();
+    // Анти-рывок после рестарта
+    private final Map<Long, Long> nextDecisionAt = new HashMap<>();
 
     @Override
     public StrategyType getType() {
@@ -32,8 +34,28 @@ public class ScalpingStrategy implements TradingStrategy {
 
     @Override
     public void start(Long chatId) {
+        // Инициализируем кэш
         activeOrders.put(chatId, new ArrayList<>());
         log.info("SCALPING стартовал для chatId={}", chatId);
+
+        // Гидратация: подтягиваем открытые ордера, чтобы не стрелять повторно после рестарта
+        try {
+            ScalpingStrategySettings cfg = settingsService.getOrCreate(chatId);
+            List<Order> fromExchange = orderService.loadActiveOrders(chatId, cfg.getSymbol());
+            if (fromExchange != null && !fromExchange.isEmpty()) {
+                List<Order> cleaned = new ArrayList<>();
+                for (Order o : fromExchange) {
+                    if (!o.isCancelled() && !o.isClosed()) cleaned.add(o);
+                }
+                activeOrders.put(chatId, cleaned);
+                log.info("SCALPING: подхвачено активных ордеров: {}", cleaned.size());
+            }
+        } catch (Throwable t) {
+            log.debug("SCALPING start: гидратация не удалась: {}", t.getMessage());
+        }
+
+        // Мягкий старт: 15 сек без решений
+        nextDecisionAt.put(chatId, System.currentTimeMillis() + 15_000);
     }
 
     @Override
@@ -51,6 +73,12 @@ public class ScalpingStrategy implements TradingStrategy {
     public void onPriceUpdate(Long chatId, double currentPrice) {
         ScalpingStrategySettings cfg = settingsService.getOrCreate(chatId);
 
+        // Мягкий старт/кулдаун после рестарта
+        Long ts = nextDecisionAt.get(chatId);
+        if (ts != null && System.currentTimeMillis() < ts) {
+            return;
+        }
+
         // Берём последние свечи — НОВАЯ сигнатура с chatId
         List<Candle> candles = candleService.getCandles(
                 chatId,
@@ -64,10 +92,11 @@ public class ScalpingStrategy implements TradingStrategy {
             return;
         }
 
-        // Свечи возвращают BigDecimal — приводим к double
-        int openIdx = Math.max(0, candles.size() - cfg.getWindowSize());
-        double open  = candles.get(openIdx).getOpen().doubleValue();
-        double close = candles.getLast().getClose().doubleValue();
+        // Вычисляем изменение за окно
+        int w = cfg.getWindowSize();
+        double open  = candles.get(candles.size() - w).getClose().doubleValue();
+        double close = candles.get(candles.size() - 1).getClose().doubleValue();
+
         if (open <= 0) {
             log.warn("open<=0 для chatId={}, symbol={}, tf={}", chatId, cfg.getSymbol(), cfg.getTimeframe());
             return;

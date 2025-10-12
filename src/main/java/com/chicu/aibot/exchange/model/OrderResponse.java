@@ -1,4 +1,3 @@
-// src/main/java/com/chicu/aibot/exchange/model/OrderResponse.java
 package com.chicu.aibot.exchange.model;
 
 import lombok.*;

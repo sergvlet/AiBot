@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,7 +32,6 @@ public class OrderExecutionService {
     private final ExchangeSettingsService settingsService;
     private final ExchangeOrderRepository orderRepo;
 
-    // пред-проверки цены/фильтров
     private final SymbolFiltersService symbolFiltersService;
     private final PriceService priceService;
 
@@ -92,31 +92,50 @@ public class OrderExecutionService {
         BigDecimal minQty     = filters.getMinQty();
         BigDecimal minNotional= filters.getMinNotional();
 
+        // цену НЕ округляем по тик-сайзу (его нет в SymbolFilters)
         BigDecimal p = BigDecimal.valueOf(price);
         BigDecimal q = roundToStep(BigDecimal.valueOf(quantity), stepSize);
 
+        // анти-дубль: уже есть открытый такой же LIMIT (symbol/side/price/qty)?
+        var openStatuses = List.of("NEW", "PARTIALLY_FILLED");
+        Optional<ExchangeOrderEntity> dup = orderRepo.findTopByChatIdAndExchangeAndNetworkAndSymbolAndSideAndTypeAndPriceAndQuantityAndStatusInOrderByCreatedAtDesc(
+                chatId,
+                settings.getExchange().name(),
+                settings.getNetwork(),
+                symbol,
+                side.name(),
+                "LIMIT",
+                p,
+                q,
+                openStatuses
+        );
+        if (dup.isPresent()) {
+            log.info("⛔️ Пропускаем дубль LIMIT {} {}: уже есть открытый ордер @{} qty={}", side, symbol, p, q);
+            return toDomain(dup.get());
+        }
+
         if (q.compareTo(BigDecimal.ZERO) <= 0) {
-            log.warn("⛔️ Пропускаем LIMIT {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
+            log.warn("⛔️ LIMIT {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "LIMIT", price, 0.0, "Qty <= 0");
+                    symbol, side, "LIMIT", bdToDouble(p), 0.0, "Qty <= 0");
         }
         if (minQty != null && q.compareTo(minQty) < 0) {
-            log.warn("⛔️ Пропускаем LIMIT {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
+            log.warn("⛔️ LIMIT {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "LIMIT", price, q.doubleValue(), "Qty < minQty");
+                    symbol, side, "LIMIT", bdToDouble(p), q.doubleValue(), "Qty < minQty");
         }
         if (minNotional != null && q.multiply(p).compareTo(minNotional) < 0) {
-            log.warn("⛔️ Пропускаем LIMIT {} {}: notional < minNotional ({} < {})",
+            log.warn("⛔️ LIMIT {} {}: notional < minNotional ({} < {})",
                     side, symbol, q.multiply(p), minNotional);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "LIMIT", price, q.doubleValue(), "Notional < minNotional");
+                    symbol, side, "LIMIT", bdToDouble(p), q.doubleValue(), "Notional < minNotional");
         }
 
         var req = OrderRequest.builder()
                 .symbol(symbol)
                 .side(mapSide(side))
                 .type(com.chicu.aibot.exchange.enums.OrderType.LIMIT)
-                .price(BigDecimal.valueOf(price))
+                .price(p)
                 .quantity(q)
                 .build();
 
@@ -126,10 +145,10 @@ public class OrderExecutionService {
         } catch (Exception e) {
             log.warn("❌ LIMIT {} {} qty={} price={} ошибка={}", side, symbol, q, p, e.getMessage());
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
-                    symbol, side, "LIMIT", price, q.doubleValue(), e.getMessage());
+                    symbol, side, "LIMIT", bdToDouble(p), q.doubleValue(), e.getMessage());
         }
 
-        // Подтянем финальные данные (avg price, executed, статус)
+        // Подтягиваем финальные данные (avg price, executed, статус)
         OrderInfo fetched = fetchOrderSafe(client, keys.getPublicKey(), keys.getSecretKey(),
                 settings.getNetwork(), symbol, resp.getOrderId());
 
@@ -190,18 +209,36 @@ public class OrderExecutionService {
             }
         }
 
+        // анти-дубль для MARKET: по qty + side (цену не учитываем, у MARKET её может не быть)
+        var openStatuses = List.of("NEW", "PARTIALLY_FILLED");
+        Optional<ExchangeOrderEntity> dup = orderRepo.findTopByChatIdAndExchangeAndNetworkAndSymbolAndSideAndTypeAndPriceAndQuantityAndStatusInOrderByCreatedAtDesc(
+                chatId,
+                settings.getExchange().name(),
+                settings.getNetwork(),
+                symbol,
+                side.name(),
+                "MARKET",
+                lastPrice == null ? BigDecimal.ZERO : lastPrice, // храним lastPrice либо 0
+                q,
+                openStatuses
+        );
+        if (dup.isPresent()) {
+            log.info("⛔️ Пропускаем дубль MARKET {} {} qty={} (уже есть открытый)", side, symbol, q);
+            return toDomain(dup.get());
+        }
+
         if (q.compareTo(BigDecimal.ZERO) <= 0) {
-            log.warn("⛔️ Пропускаем MARKET {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
+            log.warn("⛔️ MARKET {} {}: qty <= 0 (после stepSize={})", side, symbol, stepSize);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
                     symbol, side, "MARKET", bdToDouble(lastPrice), 0.0, "Qty <= 0");
         }
         if (minQty != null && q.compareTo(minQty) < 0) {
-            log.warn("⛔️ Пропускаем MARKET {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
+            log.warn("⛔️ MARKET {} {}: qty < minQty ({} < {})", side, symbol, q, minQty);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
                     symbol, side, "MARKET", bdToDouble(lastPrice), q.doubleValue(), "Qty < minQty");
         }
         if (lastPrice != null && minNotional != null && q.multiply(lastPrice).compareTo(minNotional) < 0) {
-            log.warn("⛔️ Пропускаем MARKET {} {}: notional < minNotional ({} < {})",
+            log.warn("⛔️ MARKET {} {}: notional < minNotional ({} < {})",
                     side, symbol, q.multiply(lastPrice), minNotional);
             return saveRejected(chatId, settings.getExchange().name(), settings.getNetwork(),
                     symbol, side, "MARKET", bdToDouble(lastPrice), q.doubleValue(), "Notional < minNotional");
@@ -283,17 +320,7 @@ public class OrderExecutionService {
         orderRepo.save(entity);
         log.info("💾 REJECTED ордер {} {} qty={} причина={}", side, symbol, quantity, reason);
 
-        return new Order(
-                entity.getOrderId(),
-                symbol,
-                side,
-                price,
-                0.0,
-                false,   // filled
-                true,    // cancelled
-                false,   // closed
-                true     // rejected
-        );
+        return toDomain(entity);
     }
 
     private Order saveExecuted(Long chatId, String exchange, NetworkType network,
@@ -329,20 +356,24 @@ public class OrderExecutionService {
 
         orderRepo.save(entity);
 
-        log.info("💾 Ордер сохранён: {} {} qty={} @{} статус={} комиссия={} {}",
-                side, entity.getSymbol(), entity.getExecutedQty(), entity.getPrice(),
+        log.info("💾 Ордер сохранён: {} {} reqQty={} execQty={} @{} статус={} комиссия={} {}",
+                side, entity.getSymbol(), entity.getQuantity(), entity.getExecutedQty(), entity.getPrice(),
                 entity.getStatus(), entity.getCommission(), entity.getCommissionAsset());
 
+        return toDomain(entity);
+    }
+
+    private Order toDomain(ExchangeOrderEntity e) {
         return new Order(
-                entity.getOrderId(),
-                entity.getSymbol(),
-                side,
-                bdToDouble(entity.getPrice()),
-                bdToDouble(entity.getExecutedQty()),
-                "FILLED".equalsIgnoreCase(entity.getStatus()),
-                "CANCELED".equalsIgnoreCase(entity.getStatus()) || "EXPIRED".equalsIgnoreCase(entity.getStatus()),
+                e.getOrderId(),
+                e.getSymbol(),
+                Order.Side.valueOf(e.getSide()),
+                bdToDouble(e.getPrice()),
+                bdToDouble(e.getExecutedQty()),
+                "FILLED".equalsIgnoreCase(e.getStatus()),
+                "CANCELED".equalsIgnoreCase(e.getStatus()) || "EXPIRED".equalsIgnoreCase(e.getStatus()),
                 false,
-                "REJECTED".equalsIgnoreCase(entity.getStatus())
+                "REJECTED".equalsIgnoreCase(e.getStatus())
         );
     }
 }

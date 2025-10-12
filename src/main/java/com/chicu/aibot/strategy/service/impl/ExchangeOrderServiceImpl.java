@@ -26,79 +26,59 @@ public class ExchangeOrderServiceImpl implements OrderService {
     private final ExchangeSettingsService settingsService;
     private final OrderExecutionService executionService; // вынесена логика placeLimit/placeMarket
 
+    // Анти-дупы для MARKET и анти-спам
+    private final java.util.Map<String, Long> lastMarketAttemptTs = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long MARKET_COOLDOWN_MS = 30_000; // 30 секунд
+
     private String normalizeStatus(String raw) {
         if (raw == null) return "";
         return raw.trim().toUpperCase(Locale.ROOT).replace(" ", "").replace("_", "");
     }
 
-    private int priceCompare(BigDecimal a, BigDecimal b) {
-        if (a == null && b == null) return 0;
-        if (a == null) return -1;
-        if (b == null) return 1;
-        return a.stripTrailingZeros().compareTo(b.stripTrailingZeros());
+    @Override
+    public Order placeLimit(Long chatId, String symbol, Order.Side side, double price, double quantity) {
+        return executionService.placeLimit(chatId, symbol, side, price, quantity);
     }
 
-    /**
-     * Проверка: есть ли уже открытая лимитка на том же уровне и той же стороне.
-     * Нужны ключи, т.к. берём открытые ордера с биржи.
-     */
-    private boolean existsOpenLimit(Long chatId, String symbol, Order.Side side, BigDecimal price) {
+    private boolean hasAnyOpenOrders(Long chatId, String symbol) {
         try {
             var settings = settingsService.getOrCreate(chatId);
             var keys     = settingsService.getApiKey(chatId);
             ExchangeClient client = clientFactory.getClient(settings.getExchange());
-
-            List<OrderInfo> openOrders = client.fetchOpenOrders(
-                    keys.getPublicKey(),
-                    keys.getSecretKey(),
-                    settings.getNetwork(),
-                    symbol
+            List<OrderInfo> open = client.fetchOpenOrders(
+                    keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), symbol
             );
-
-            OrderSide exSide = (side == Order.Side.BUY) ? OrderSide.BUY : OrderSide.SELL;
-
-            for (OrderInfo oi : openOrders) {
-                if (!Objects.equals(symbol, oi.getSymbol())) continue;
-                if (oi.getSide() != exSide) continue;
-
-                // Цена может быть null для MARKET, но у нас лимитки — сравниваем аккуратно
-                BigDecimal p = oi.getPrice();
-                if (priceCompare(p, price) == 0) {
-                    log.debug("Найдена существующая лимитка {} {} @{} (id={}) — дубликат",
-                            symbol, side, p, oi.getOrderId());
-                    return true;
-                }
-            }
+            return open != null && !open.isEmpty();
         } catch (Exception e) {
-            // Не валим процесс из-за сетевой/биржевой ошибки — просто позволим поставить ордер
-            log.warn("existsOpenLimit: не удалось проверить дубликаты: {}", e.getMessage());
+            log.warn("hasAnyOpenOrders: ошибка запроса открытых ордеров: {}", e.getMessage());
+            // На ошибке лучше не блокировать — возвращаем false
+            return false;
         }
+    }
+
+    private boolean marketCooldownHit(Long chatId, String symbol, Order.Side side) {
+        String key = chatId + ":" + symbol + ":" + side;
+        long now = System.currentTimeMillis();
+        Long prev = lastMarketAttemptTs.get(key);
+        if (prev != null && now - prev < MARKET_COOLDOWN_MS) return true;
+        lastMarketAttemptTs.put(key, now);
         return false;
     }
 
     @Override
-    public Order placeLimit(Long chatId, String symbol, Order.Side side, double price, double quantity) {
-        // Анти-дубликаты: не ставим такую же лимитку на том же уровне
-        if (existsOpenLimit(chatId, symbol, side, BigDecimal.valueOf(price))) {
-            log.info("Пропуск постановки дубликата лимитки: {} {} @{} qty={}", symbol, side, price, quantity);
-            // Возвращаем "псевдо-ордер" без id, чтобы верхний слой не считал это ошибкой
-            return new Order(
-                    "SKIPPED-DUPLICATE",
-                    symbol,
-                    side,
-                    price,
-                    quantity,
-                    false,
-                    false,
-                    false
-            );
-        }
-        // Поручаем реальную постановку общему исполнителю (там нормализация, GTC и т. п.)
-        return executionService.placeLimit(chatId, symbol, side, price, quantity);
-    }
-
-    @Override
     public Order placeMarket(Long chatId, String symbol, Order.Side side, double quantity) {
+        // Анти-спам кулдаун: защищаемся от повторных MARKET-вызовов при рестарте/флаттере сигнала
+        if (marketCooldownHit(chatId, symbol, side)) {
+            log.info("⏳ MARKET cooldown: {} {} qty={} — пропускаем повтор", symbol, side, quantity);
+            return new Order("SKIPPED-COOLDOWN", symbol, side, 0.0, quantity, false, false, false);
+        }
+
+        // Если уже есть открытые ордера по символу — не стреляем рынком
+        if (hasAnyOpenOrders(chatId, symbol)) {
+            log.info("⛔️ MARKET заблокирован: есть открытые ордера по {}", symbol);
+            return new Order("SKIPPED-OPEN-ORDERS", symbol, side, 0.0, quantity, false, false, false);
+        }
+
         return executionService.placeMarket(chatId, symbol, side, quantity);
     }
 
@@ -121,20 +101,15 @@ public class ExchangeOrderServiceImpl implements OrderService {
             return;
         }
 
-        var settings = settingsService.getOrCreate(chatId);
-        var keys     = settingsService.getApiKey(chatId);
-        ExchangeClient client = clientFactory.getClient(settings.getExchange());
-
         try {
-            boolean ok = client.cancelOrder(
-                    keys.getPublicKey(),
-                    keys.getSecretKey(),
-                    settings.getNetwork(),
-                    order.getSymbol(),
-                    order.getId()
-            );
-            order.setCancelled(ok);
-            log.info("Отмена ордера {}: {}", order.getId(), ok ? "успешно" : "не выполнена");
+            var settings = settingsService.getOrCreate(chatId);
+            var keys     = settingsService.getApiKey(chatId);
+            ExchangeClient client = clientFactory.getClient(settings.getExchange());
+
+            String id = order.getId();
+            client.cancelOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), order.getSymbol(), id);
+            order.setCancelled(true);
+            log.info("Ордер отменён: id={}, symbol={}", id, order.getSymbol());
         } catch (Exception e) {
             String msg = String.valueOf(e.getMessage());
             if (msg.contains("order does not exist") || msg.contains("Unknown order")) {
@@ -156,12 +131,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
             log.warn("Пропуск закрытия: volume=0");
             return;
         }
-
         Order.Side opposite = (order.getSide() == Order.Side.BUY) ? Order.Side.SELL : Order.Side.BUY;
 
-        // Закрываем MARKET — без IOC/FOK лимиток, которые истекают
         try {
-            executionService.placeMarket(chatId, order.getSymbol(), opposite, order.getVolume());
+            // делегируем в executionService, который учтёт фильтры/баланс
+            Order closed = executionService.placeMarket(chatId, order.getSymbol(), opposite, order.getVolume());
+            closed.setClosed(true);
             order.setClosed(true);
             log.info("Позиция закрыта MARKET: {} {} qty={}", order.getSymbol(), opposite, order.getVolume());
         } catch (Exception e) {
@@ -195,7 +170,8 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
                 String statusNorm = normalizeStatus(oi.getStatus());
                 boolean filled    = "FILLED".equals(statusNorm) || (executed >= origQty && origQty > 0.0);
-                boolean canceled  = "CANCELED".equals(statusNorm) || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm);
+                boolean canceled  = "CANCELED".equals(statusNorm) || "CANCELLED".equals(statusNorm)
+                        || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm);
 
                 if (!canceled) {
                     result.add(new Order(
@@ -218,7 +194,16 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     @Override
     public void refreshOrderStatuses(Long chatId, String symbol, List<Order> cache) {
-        if (cache == null || cache.isEmpty()) return;
+        if (cache == null) return;
+        if (cache.isEmpty()) {
+            // Гидратим открытые ордера из биржи в пустой кэш
+            List<Order> open = loadActiveOrders(chatId, symbol);
+            if (open != null && !open.isEmpty()) {
+                cache.addAll(open);
+            } else {
+                return; // нечего обновлять
+            }
+        }
 
         var settings = settingsService.getOrCreate(chatId);
         var keys     = settingsService.getApiKey(chatId);
@@ -237,13 +222,8 @@ public class ExchangeOrderServiceImpl implements OrderService {
             }
 
             try {
-                var opt = client.fetchOrder(
-                        keys.getPublicKey(),
-                        keys.getSecretKey(),
-                        settings.getNetwork(),
-                        symbol,
-                        id
-                );
+                var opt = client.fetchOrder(keys.getPublicKey(), keys.getSecretKey(),
+                        settings.getNetwork(), symbol, id);
 
                 if (opt.isEmpty()) {
                     o.setCancelled(true);
@@ -259,16 +239,16 @@ public class ExchangeOrderServiceImpl implements OrderService {
                 // НЕ перезаписываем объём ордера executed-количеством!
                 // if (executed > 0.0) o.setVolume(executed);  ← это было источником qty=0E-8 в логах
 
-                switch (status) {
-                    case "FILLED" -> o.setFilled(true);
-                    case "PARTIALLYFILLED", "PARTIALLY_FILLED" -> {
-                        // оставляем открытым; при необходимости можно логировать прогресс
-                        if (origQty > 0 && executed >= origQty) o.setFilled(true);
-                    }
-                    case "CANCELED", "REJECTED", "EXPIRED" -> o.setCancelled(true);
-                    default -> {
-                        // NEW / PENDING_NEW / другие — оставляем как есть
-                    }
+                if ("FILLED".equals(status) || (executed >= origQty && origQty > 0.0)) {
+                    o.setFilled(true);
+                    o.setClosed(true);
+                    log.info("refresh: FILLED id={}, executed={}/{}", id, executed, origQty);
+                } else if ("CANCELED".equals(status) || "CANCELLED".equals(status)
+                        || "EXPIRED".equals(status) || "REJECTED".equals(status)) {
+                    o.setCancelled(true);
+                    log.info("refresh: {} id={} → помечаем отменённым", status, id);
+                } else {
+                    // NEW / PENDING_NEW / другие — оставляем как есть
                 }
             } catch (Exception e) {
                 String msg = String.valueOf(e.getMessage());
