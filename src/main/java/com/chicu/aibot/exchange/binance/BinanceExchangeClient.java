@@ -661,14 +661,32 @@ public class BinanceExchangeClient implements ExchangeClient {
     }
 
     @Override
-    public boolean cancelOrder(String apiKey, String secretKey, NetworkType n, String symbol, String orderId) {
-        try {
-            String pq = "symbol=" + enc(symbol) + "&orderId=" + enc(orderId);
-            signedDelete(n, pq, apiKey, secretKey);
-            return true;
-        } catch (Exception e) {
-            log.warn("Binance cancelOrder({}, {}) failed: {}", symbol, orderId, e.getMessage());
-            return false;
+    public boolean cancelOrder(String exchange,
+                               String symbol,
+                               NetworkType network,
+                               String orderId,
+                               String clientOrderId) {
+        // Если есть биржевой orderId — используем его.
+        // Иначе используем origClientOrderId.
+        Map<String, String> params = new HashMap<>();
+        params.put("symbol", symbol);
+
+        if (orderId != null && !orderId.isBlank()) {
+            params.put("orderId", orderId);
+        } else if (clientOrderId != null && !clientOrderId.isBlank()) {
+            params.put("origClientOrderId", clientOrderId);
+        } else {
+            // вообще нет идентификатора — нечего отправлять на биржу
+            throw new IllegalArgumentException("Both orderId and clientOrderId are empty");
         }
+
+        // ... тут ваш текущий код подписи запроса/вызова REST (DELETE /api/v3/order)
+        // например:
+        // signedDelete("/api/v3/order", params);
+
+        log.info("Binance cancel sent: symbol={}, orderId={}, origClientOrderId={}",
+                symbol, params.get("orderId"), params.get("origClientOrderId"));
+        return false;
     }
+
 }

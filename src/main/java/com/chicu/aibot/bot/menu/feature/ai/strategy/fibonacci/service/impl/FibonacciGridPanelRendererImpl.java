@@ -8,20 +8,22 @@ import com.chicu.aibot.exchange.order.service.ExchangeOrderDbService;
 import com.chicu.aibot.exchange.service.MarketLiveService;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.service.FibonacciGridStrategySettingsService;
-import com.chicu.aibot.trading.trade.TradeLogService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 
+import java.math.BigDecimal;
 import java.text.DecimalFormat;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
+import java.text.DecimalFormatSymbols;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.boolEmoji;
+import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.nvl;
 import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.onOff;
 
 @Component
@@ -44,13 +46,7 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
 
     private final FibonacciGridStrategySettingsService settingsService;
     private final MarketLiveService liveService;
-    private final TradeLogService tradeLogService;
     private final ExchangeOrderDbService orderDb;
-
-    private static final DateTimeFormatter TS_FMT =
-            DateTimeFormatter.ofPattern("dd.MM HH:mm")
-                    .withLocale(Locale.forLanguageTag("ru-RU"))
-                    .withZone(ZoneId.systemDefault());
 
     @Override
     public SendMessage render(Long chatId) {
@@ -58,18 +54,16 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
         String symbol = nvl(s.getSymbol());
         LiveSnapshot live = liveService.build(chatId, symbol);
 
-        // Лёгкий текст вместо “последней сделки” (реальные сделки показываем ниже блоком FILLED)
-        String recentHint = "_см. ниже блок «Последние исполненные ордера»_";
+        // ===== Сделки / PnL на основе FILLED-ордеров из БД =====
+        String quote = nvl2(live.getQuote(), "USDT");
+        String dealsLine = buildLastFilledLine(chatId, symbol, quote);
+        String totalPnlLine = "Всего по %s: %s %s".formatted(
+                symbol, signMoney(sumFilledPnl(chatId, symbol, 1000)), quote
+        );
 
-        // Итоговый PnL — принимаем Optional<?> (поддержит Optional<Double> и Optional<String>)
-        String totalPnlBlock = formatTotalPnl(tradeLogService.getTotalPnl(chatId, symbol));
-
-        // Открытые ордера
+        // ===== Открытые ордера =====
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
-
-        // Недавние исполненные ордера
-        String recentTradesBlock = formatRecentFills(chatId, symbol, 5);
 
         String text = ("""
                 *📊 Fibonacci Grid Strategy*
@@ -84,9 +78,6 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
 
                 *Сделки / PnL:*
                 %s
-                %s
-
-                *Последние исполненные ордера:*
                 %s
 
                 *Открытые ордера (%d):*
@@ -105,23 +96,22 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
                 symbol,
                 live.getChangePct() >= 0 ? "📈" : "📉",
-                live.getChangeStr(),
-                live.getPriceStr(),
-                live.getBase(), live.getBaseBal(),
-                live.getQuote(), live.getQuoteBal(),
-                recentHint,
-                totalPnlBlock,
-                recentTradesBlock,
+                nvl(live.getChangeStr()),
+                nvl(live.getPriceStr()),
+                nvl(live.getBase()), nvl(live.getBaseBal()),
+                nvl(live.getQuote()), nvl(live.getQuoteBal()),
+                dealsLine,
+                totalPnlLine,
                 openOrders.size(),
                 openOrdersBlock,
-                nvl(s.getOrderVolume(), 0.0),
-                nvl(s.getTimeframe(), "1m"),
-                nvl(s.getCachedCandlesLimit(), 500),
-                nvl(s.getGridSizePct(), 0.8),
-                nvl(s.getMaxActiveOrders(), 3),
+                safeD(s.getOrderVolume()),
+                nvl(s.getTimeframe()),
+                safeI(s.getCachedCandlesLimit()),
+                safeD(s.getGridSizePct()),
+                safeI(s.getMaxActiveOrders()),
                 boolEmoji(s.getAllowLong()), boolEmoji(s.getAllowShort()),
-                nvl(s.getTakeProfitPct(), 0.6),
-                nvl(s.getStopLossPct(), 0.8),
+                safeD(s.getTakeProfitPct()),
+                safeD(s.getStopLossPct()),
                 s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
         );
 
@@ -132,20 +122,20 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                         AdaptiveKeyboard.btn("‹ Назад", "ai_trading")
                 ),
                 List.of(
-                    AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
-                    AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
-                    AdaptiveKeyboard.btn("🧱 Шаг %", BTN_EDIT_GRID),
-                    AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
+                        AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
+                        AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
+                        AdaptiveKeyboard.btn("🧱 Шаг %", BTN_EDIT_GRID),
+                        AdaptiveKeyboard.btn("📊 Макс. орд.", BTN_EDIT_MAX_ORD)
                 ),
                 List.of(
-                    AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
-                    AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
-                    AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
-                    AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL),
-                    AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
+                        AdaptiveKeyboard.btn("📈 LONG " + onOff(s.getAllowLong()), BTN_TOGGLE_LONG),
+                        AdaptiveKeyboard.btn("📉 SHORT " + onOff(s.getAllowShort()), BTN_TOGGLE_SHORT),
+                        AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
+                        AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL),
+                        AdaptiveKeyboard.btn("⏱ Таймфрейм", BTN_EDIT_TF)
                 ),
                 List.of(
-                    AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить" : "🟢 Запустить", BTN_TOGGLE_ACTIVE)
+                        AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить" : "🟢 Запустить", BTN_TOGGLE_ACTIVE)
                 )
         ), 3);
 
@@ -158,63 +148,123 @@ public class FibonacciGridPanelRendererImpl implements FibonacciGridPanelRendere
                 .build();
     }
 
-    /* ================= helpers ================= */
+    /* ==================== PnL helpers ==================== */
 
-    /** Печать последних FILLED из БД. */
-    private String formatRecentFills(Long chatId, String symbol, int limit) {
-        // Сервисный метод ожидаем такого вида:
-        //   List<ExchangeOrderEntity> findRecentFilled(Long chatId, String symbol, int limit)
-        List<ExchangeOrderEntity> filled = orderDb.findRecentFilled(chatId, symbol, limit);
-        if (filled == null || filled.isEmpty()) return "_нет сделок_";
+    /** Берём самый свежий FILLED-ордер и выводим строку. */
+    private String buildLastFilledLine(Long chatId, String symbol, String quote) {
+        List<ExchangeOrderEntity> lastFilled = orderDb.findRecentFilled(chatId, symbol, 1);
+        if (lastFilled == null || lastFilled.isEmpty()) return "_нет сделок_";
+        ExchangeOrderEntity e = lastFilled.getFirst();
 
-        StringBuilder sb = new StringBuilder();
-        for (ExchangeOrderEntity o : filled) {
-            String ts = (o.getUpdatedAt() != null) ? TS_FMT.format(o.getUpdatedAt()) : "—";
-            sb.append("• ").append(nvl(o.getSide()))
-              .append(" `").append(nz(o.getQuantity())).append('`')
-              .append(" @ `").append(nz(o.getPrice())).append('`')
-              .append(" *FILLED* ")
-              .append("(`#").append(nvl(o.getOrderId())).append("`)")
-              .append(" _( ").append(ts).append(" )_")
-              .append('\n');
-        }
-        return sb.toString().stripTrailing();
+        String side = nvl(e.getSide()).toUpperCase(Locale.ROOT); // BUY / SELL
+        String qty  = fmtQty(e.getQuantity());
+        String px   = fmtPrice(e.getPrice());
+        String pnl  = signMoney(e.getPnl());
+        String pct  = signPct(e.getPnlPct());
+
+        // Формат максимально близкий к твоему пожеланию
+        // (одна нога, т.к. пары BUY->SELL в таблице нет; если нужен именно парный трейд — подскажу как связать по clientOrderId)
+        return "Последняя: %s %s @ %s | PnL: %s %s (%s)".formatted(side, qty, px, pnl, quote, pct);
     }
 
-    /** Открытые ордера. */
+    /** Сумма PnL по последним FILLED-ордерам (лимит регулируется параметром). */
+    private BigDecimal sumFilledPnl(Long chatId, String symbol, int limit) {
+        List<ExchangeOrderEntity> recent = orderDb.findRecentFilled(chatId, symbol, limit);
+        if (recent == null || recent.isEmpty()) return BigDecimal.ZERO;
+        return recent.stream()
+                .map(ExchangeOrderEntity::getPnl)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /* ==================== Orders formatting ==================== */
+
     private static String formatOpenOrdersBlock(List<ExchangeOrderEntity> open) {
-        if (open == null || open.isEmpty()) return "_нет открытых ордеров_";
-        StringBuilder sb = new StringBuilder();
-        for (ExchangeOrderEntity o : open) {
-            sb.append("• ")
-              .append(nvl(o.getSide())).append(' ').append(nvl(o.getType()))
-              .append(" qty `").append(nz(o.getQuantity())).append('`')
-              .append(" @ `").append(nz(o.getPrice())).append('`')
-              .append(" filled `").append(nz(o.getExecutedQty())).append('`')
-              .append(' ').append(nvl(o.getStatus()))
-              .append(" (`#").append(nvl(o.getOrderId())).append("`)")
-              .append('\n');
+        if (open == null || open.isEmpty()) return "_нет_";
+        var fmt = new StringBuilder();
+        List<ExchangeOrderEntity> sorted = open.stream()
+                .sorted(Comparator.comparing(ExchangeOrderEntity::getPrice, Comparator.nullsLast(BigDecimal::compareTo)))
+                .toList();
+        for (ExchangeOrderEntity o : sorted) {
+            String side = nvl(o.getSide());
+            String type = nvl(o.getType());
+            String qty  = fmtQty(o.getQuantity());
+            String price = fmtPrice(o.getPrice());
+            String filled = fmtQty(o.getExecutedQty() == null ? BigDecimal.ZERO : o.getExecutedQty());
+            String status = "*" + nvl2(o.getStatus(), "NEW") + "*";
+            String id = "#" + nvl2(o.getOrderId(), "-");
+            fmt.append("• ")
+               .append(side).append(' ').append(type)
+               .append(" qty `").append(qty).append('`')
+               .append(" @ `").append(price).append('`')
+               .append(" filled `").append(filled).append('`')
+               .append(' ').append(status).append(' ')
+               .append('(').append(id).append(')')
+               .append('\n');
         }
-        return sb.toString().stripTrailing();
+        return fmt.toString().stripTrailing();
     }
 
-    /** Форматируем итоговый PnL из Optional<Double> или Optional<String>. */
-    private static String formatTotalPnl(Optional<?> totalPnlOpt) {
-        if (totalPnlOpt == null || totalPnlOpt.isEmpty()) return "_нет данных по PnL_";
-        Object v = totalPnlOpt.get();
-        if (v instanceof Number num) {
-            // красиво отформатируем число
-            DecimalFormat df = (DecimalFormat) DecimalFormat.getNumberInstance(Locale.forLanguageTag("ru-RU"));
-            df.applyPattern("#,##0.##");
-            return "*Итоговый PnL:* " + df.format(num.doubleValue());
-        }
-        return "*Итоговый PnL:* " + v;
+    /* ==================== Local utils (без перегрузок nvl из PanelTextUtils) ==================== */
+
+    private static String nvl2(String v, String def) { return (v == null || v.isBlank()) ? def : v; }
+
+    private static int safeI(Integer v) { return v == null ? 0 : v; }
+    private static double safeD(Double v) { return v == null ? 0d : v; }
+    private static double safeSign(Double v) { return v == null ? 0d : v; }
+
+    private static final ThreadLocal<DecimalFormat> DF_QTY   = ThreadLocal.withInitial(() -> {
+        DecimalFormatSymbols s = DecimalFormatSymbols.getInstance(Locale.US);
+        s.setGroupingSeparator(' ');
+        DecimalFormat df = new DecimalFormat("0.########", s);
+        df.setGroupingUsed(true);
+        df.setMaximumFractionDigits(8);
+        return df;
+    });
+
+    private static final ThreadLocal<DecimalFormat> DF_PRICE = ThreadLocal.withInitial(() -> {
+        DecimalFormatSymbols s = DecimalFormatSymbols.getInstance(Locale.US);
+        s.setGroupingSeparator(' ');
+        DecimalFormat df = new DecimalFormat("0.####", s);
+        df.setGroupingUsed(true);
+        df.setMaximumFractionDigits(8);
+        return df;
+    });
+
+    private static final ThreadLocal<DecimalFormat> DF_MONEY = ThreadLocal.withInitial(() -> {
+        DecimalFormatSymbols s = DecimalFormatSymbols.getInstance(Locale.US);
+        s.setGroupingSeparator(' ');
+        DecimalFormat df = new DecimalFormat("0.##", s);
+        df.setGroupingUsed(true);
+        df.setMaximumFractionDigits(8);
+        return df;
+    });
+
+    private static String fmtQty(BigDecimal v) {
+        if (v == null) return "-";
+        return DF_QTY.get().format(v);
     }
 
-    // безопасные mini-NVL’ы (перегрузки)
-    private static String nvl(String s) { return (s == null) ? "" : s; }
-    private static String nvl(String s, String def) { return (s == null || s.isBlank()) ? def : s; }
-    private static int nvl(Integer v, int def) { return v == null ? def : v; }
-    private static double nvl(Double v, double def) { return v == null ? def : v; }
-    private static String nz(Object v) { return v == null ? "0" : v.toString(); }
+    private static String fmtPrice(BigDecimal v) {
+        if (v == null) return "-";
+        return DF_PRICE.get().format(v);
+    }
+
+    private static String fmtMoney(BigDecimal v) {
+        if (v == null) return "-";
+        return DF_MONEY.get().format(v);
+    }
+
+    private static String signMoney(BigDecimal v) {
+        if (v == null) return "-";
+        String s = fmtMoney(v.abs());
+        return (v.signum() >= 0 ? "+" : "−") + s;
+    }
+
+    private static String signPct(BigDecimal pct) {
+        if (pct == null) return "-";
+        BigDecimal a = pct.abs();
+        String s = DF_MONEY.get().format(a);
+        return (pct.signum() >= 0 ? "+" : "−") + s + "%";
+    }
 }
