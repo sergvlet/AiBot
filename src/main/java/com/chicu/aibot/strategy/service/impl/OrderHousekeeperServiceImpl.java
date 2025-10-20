@@ -4,6 +4,7 @@ import com.chicu.aibot.exchange.client.ExchangeClient;
 import com.chicu.aibot.exchange.enums.OrderSide;
 import com.chicu.aibot.exchange.order.model.ExchangeOrderEntity;
 import com.chicu.aibot.exchange.order.repository.ExchangeOrderRepository;
+import com.chicu.aibot.exchange.service.ExchangeSettingsService;
 import com.chicu.aibot.strategy.service.HousekeepingResult;
 import com.chicu.aibot.strategy.service.OrderHousekeeperService;
 import jakarta.transaction.Transactional;
@@ -26,6 +27,9 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
     private final Map<String, ExchangeClient> exchangeClients;
 
     private final ExchangeOrderRepository orderRepo;
+
+    /** Нужен для получения apiKey/secretKey и сети по chatId. */
+    private final ExchangeSettingsService settingsService;
 
     /**
      * - Дедуп по ключу (side + нормализованный price-строкой).
@@ -60,7 +64,7 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
             // Оставляем последний, остальные отменяем/удаляем
             for (int i = 0; i < list.size() - 1; i++) {
                 ExchangeOrderEntity dup = list.get(i);
-                if (safeCancelOnExchangeThenDelete(dup)) {
+                if (safeCancelOnExchangeThenDelete(chatId, dup)) {
                     cancelledDup++;
                 }
             }
@@ -79,8 +83,8 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
                 }));
 
         int cancelledExcess = 0;
-        cancelledExcess += trimSide(bySide.get(OrderSide.BUY),  OrderSide.BUY,  maxActivePerSide);
-        cancelledExcess += trimSide(bySide.get(OrderSide.SELL), OrderSide.SELL, maxActivePerSide);
+        cancelledExcess += trimSide(chatId, bySide.get(OrderSide.BUY),  OrderSide.BUY,  maxActivePerSide);
+        cancelledExcess += trimSide(chatId, bySide.get(OrderSide.SELL), OrderSide.SELL, maxActivePerSide);
 
         int leftBuy  = (int) orderRepo.countByChatIdAndSymbolAndStatusAndSide(chatId, symbol, "NEW", OrderSide.BUY);
         int leftSell = (int) orderRepo.countByChatIdAndSymbolAndStatusAndSide(chatId, symbol, "NEW", OrderSide.SELL);
@@ -100,7 +104,7 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
     }
 
     /** Ограничение числа активных ордеров на сторону: оставляем ближние к рынку. */
-    private int trimSide(List<ExchangeOrderEntity> sideList, OrderSide side, int maxActivePerSide) {
+    private int trimSide(Long chatId, List<ExchangeOrderEntity> sideList, OrderSide side, int maxActivePerSide) {
         if (sideList == null || sideList.size() <= maxActivePerSide) return 0;
 
         // Для BUY — выше цена приоритетнее, для SELL — ниже.
@@ -114,7 +118,7 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
         int cancelled = 0;
         for (int i = maxActivePerSide; i < sideList.size(); i++) {
             ExchangeOrderEntity excess = sideList.get(i);
-            if (safeCancelOnExchangeThenDelete(excess)) {
+            if (safeCancelOnExchangeThenDelete(chatId, excess)) {
                 cancelled++;
             }
         }
@@ -126,8 +130,10 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
      * Берём exchange из сущности, подбираем нужный клиент.
      * Используем orderId, а если пуст — clientOrderId (origClientOrderId / orderLinkId).
      * Если оба пустые — удаляем только из БД.
+
+     * ВАЖНО: ответы биржи вида -2011 / "Unknown order" трактуем как «уже отменён» → удаляем запись из БД.
      */
-    private boolean safeCancelOnExchangeThenDelete(ExchangeOrderEntity o) {
+    private boolean safeCancelOnExchangeThenDelete(Long chatId, ExchangeOrderEntity o) {
         String orderId       = safeStr(o.getOrderId());
         String clientOrderId = getClientOrderIdSoft(o);
 
@@ -141,21 +147,40 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
         ExchangeClient client = resolveClient(exchangeName);
 
         try {
+            // получаем apiKey/secret/network для этого пользователя
+            var settings = settingsService.getOrCreate(chatId);
+            var keys     = settingsService.getApiKey(chatId);
+
+            // Порядок аргументов соответствует интерфейсу:
+            // String,String,String,String,NetworkType,String,String
             client.cancelOrder(
-                    exchangeName,                 // имя/код биржи (как требует твой интерфейс)
-                    safeStr(o.getSymbol()),       // символ
-                    o.getNetwork(),               // сеть
-                    orderId.isBlank() ? null : orderId,
-                    clientOrderId.isBlank() ? null : clientOrderId
+                    exchangeName,                              // exchange
+                    safeStr(o.getSymbol()),                    // symbol
+                    keys.getPublicKey(),                       // apiKey
+                    keys.getSecretKey(),                       // secretKey
+                    settings.getNetwork(),                     // network
+                    orderId.isBlank() ? null : orderId,        // orderId
+                    clientOrderId.isBlank() ? null : clientOrderId // clientOrderId
             );
+
             orderRepo.delete(o);
             log.info("HK cancelled on exchange and removed from DB: exchange={}, dbId={}, orderId={}, clientOrderId={}",
                     exchangeName, o.getId(), orderId, clientOrderId);
             return true;
+
         } catch (Exception e) {
+            String msg = String.valueOf(e.getMessage());
+            // Трактуем «уже нет на бирже» как успех
+            if (msg.contains("\"code\":-2011") || msg.contains("Unknown order")) {
+                orderRepo.delete(o);
+                log.info("HK treat cancel as success (-2011/Unknown order). Removed from DB: dbId={}, orderId={}, clientOrderId={}",
+                        o.getId(), orderId, clientOrderId);
+                return true;
+            }
+
             log.warn("HK cancel failed: exchange={}, dbId={}, orderId={}, clientOrderId={}, reason={}",
                     exchangeName, o.getId(), orderId, clientOrderId, e.getMessage());
-            // Пометим updatedAt, чтобы не «залипало» в дедупе этой же итерации
+            // Помечаем updatedAt, чтобы запись не «залипала» в этой итерации
             o.setUpdatedAt(Instant.now());
             orderRepo.save(o);
             return false;
@@ -178,7 +203,7 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
             return exchangeClients.values().iterator().next();
         }
         throw new IllegalStateException("No ExchangeClient bean matched for exchange='" + exchangeName
-                                        + "'. Available: " + exchangeClients.keySet());
+                + "'. Available: " + exchangeClients.keySet());
     }
 
     /** Нормализуем цену в строку-ключ (без лишних нулей). */
@@ -192,14 +217,13 @@ public class OrderHousekeeperServiceImpl implements OrderHousekeeperService {
 
     /** Мягкое получение clientOrderId из сущности любым известным геттером. */
     private static String getClientOrderIdSoft(ExchangeOrderEntity e) {
-        String v = firstNonBlank(
+        return firstNonBlank(
                 tryInvokeStr(e, "getClientOrderId"),
                 tryInvokeStr(e, "getOrigClientOrderId"),
                 tryInvokeStr(e, "getOrderLinkId"),
                 tryInvokeStr(e, "getClientOrderID"),
                 tryInvokeStr(e, "getOrigClientOrderID")
         );
-        return v;
     }
 
     private static String tryInvokeStr(Object target, String getter) {

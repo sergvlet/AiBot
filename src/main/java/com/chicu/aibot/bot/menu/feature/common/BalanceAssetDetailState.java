@@ -21,6 +21,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Component("balance_asset_detail")
@@ -35,7 +36,10 @@ public class BalanceAssetDetailState implements MenuState {
     private String currentAsset; // выбранная монета
 
     /** Ожидаемые действия (SELL или BUY) по чатам */
-    private final Map<Long, String> pendingAction = new HashMap<>();
+    private final Map<Long, String> pendingAction = new ConcurrentHashMap<>();
+
+    /** Флеш-уведомление, показывается один раз при следующем render и очищается */
+    private final Map<Long, String> flashNotice = new ConcurrentHashMap<>();
 
     @Override
     public String name() {
@@ -44,12 +48,14 @@ public class BalanceAssetDetailState implements MenuState {
 
     @Override
     public SendMessage render(Long chatId) {
-        return buildMessage(chatId, currentAsset, null);
+        // достаём и очищаем флеш-уведомление
+        String notice = flashNotice.remove(chatId);
+        return buildMessage(chatId, currentAsset, notice);
     }
 
     @Override
     public String handleInput(Update update) {
-        if (!update.hasCallbackQuery()) return "balance_menu";
+        if (!update.hasCallbackQuery()) return name();
 
         String data = update.getCallbackQuery().getData();
         Long chatId = update.getCallbackQuery().getMessage().getChatId();
@@ -61,7 +67,7 @@ public class BalanceAssetDetailState implements MenuState {
             }
             case "convert_to_usdt" -> {
                 pendingAction.put(chatId, "SELL");
-                return name();
+                return name(); // остаёмся тут — покажем кнопки подтверждения
             }
             case "buy_with_usdt" -> {
                 pendingAction.put(chatId, "BUY");
@@ -69,40 +75,47 @@ public class BalanceAssetDetailState implements MenuState {
             }
             case "confirm_yes" -> {
                 String action = pendingAction.remove(chatId);
-                if ("SELL".equals(action)) return executeSell(chatId);
-                if ("BUY".equals(action)) return executeBuy(chatId);
+                if ("SELL".equals(action)) {
+                    executeSell(chatId);
+                    return name(); // после операции остаёмся здесь и покажем обновлённое меню
+                }
+                if ("BUY".equals(action)) {
+                    executeBuy(chatId);
+                    return name();
+                }
+                return name();
+            }
+            case "confirm_no" -> {
+                pendingAction.remove(chatId);
+                return name();
+            }
+            case "refresh_balance" -> {
+                return name();
+            }
+            default -> {
+                // закрытие ордера
+                if (data.startsWith("cancel_order:")) {
+                    String orderId = data.substring("cancel_order:".length());
+                    try {
+                        List<Order> active = orderService.loadActiveOrders(chatId, currentAsset + "USDT");
+                        active.stream()
+                                .filter(o -> orderId.equals(o.getId()))
+                                .findFirst()
+                                .ifPresent(o -> orderService.cancel(chatId, o));
+
+                        flashNotice.put(chatId, "✅ Ордер " + orderId + " закрыт");
+                    } catch (Exception e) {
+                        flashNotice.put(chatId, "❌ Ошибка при закрытии ордера: " + e.getMessage());
+                    }
+                    return name(); // ВАЖНО: остаёмся в этом же меню
+                }
+                return name();
             }
         }
-
-        if (data.equals("confirm_no")) {
-            pendingAction.remove(chatId);
-            return name();
-        }
-
-        if (data.equals("refresh_balance")) {
-            return name();
-        }
-
-        // закрытие ордера
-        if (data.startsWith("cancel_order:")) {
-            String orderId = data.substring("cancel_order:".length());
-            try {
-                List<Order> active = orderService.loadActiveOrders(chatId, currentAsset + "USDT");
-                active.stream()
-                        .filter(o -> orderId.equals(o.getId()))
-                        .findFirst()
-                        .ifPresent(o -> orderService.cancel(chatId, o));
-                return buildMessage(chatId, currentAsset, "✅ Ордер " + orderId + " закрыт").getText();
-            } catch (Exception e) {
-                return buildMessage(chatId, currentAsset, "❌ Ошибка при закрытии ордера: " + e.getMessage()).getText();
-            }
-        }
-
-        return name();
     }
 
-    /** Конвертация монеты в USDT */
-    private String executeSell(Long chatId) {
+    /** Конвертация монеты в USDT — кладём результат во флеш и остаёмся в этом меню */
+    private void executeSell(Long chatId) {
         String result;
         try {
             var settings = settingsService.getOrCreate(chatId);
@@ -130,11 +143,11 @@ public class BalanceAssetDetailState implements MenuState {
         } catch (Exception e) {
             result = "❌ Ошибка при конвертации: " + e.getMessage();
         }
-        return buildMessage(chatId, currentAsset, result).getText();
+        flashNotice.put(chatId, result);
     }
 
-    /** Покупка монеты за USDT */
-    private String executeBuy(Long chatId) {
+    /** Покупка монеты за USDT — кладём результат во флеш и остаёмся в этом меню */
+    private void executeBuy(Long chatId) {
         String result;
         try {
             var settings = settingsService.getOrCreate(chatId);
@@ -162,7 +175,7 @@ public class BalanceAssetDetailState implements MenuState {
         } catch (Exception e) {
             result = "❌ Ошибка при покупке: " + e.getMessage();
         }
-        return buildMessage(chatId, currentAsset, result).getText();
+        flashNotice.put(chatId, result);
     }
 
     /** Рендер баланса + кнопок */
@@ -236,7 +249,7 @@ public class BalanceAssetDetailState implements MenuState {
         text.append("Всего: `").append(total).append("`\n");
         text.append("💵 ~ В USDT: *").append(usdValue).append("*\n");
 
-        if (notice != null) {
+        if (notice != null && !notice.isBlank()) {
             text.append("\n").append(notice);
         }
 

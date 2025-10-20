@@ -11,11 +11,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -67,7 +65,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
 
     @Override
     public Order placeMarket(Long chatId, String symbol, Order.Side side, double quantity) {
-        // Анти-спам кулдаун: защищаемся от повторных MARKET-вызовов при рестарте/флаттере сигнала
+        // Анти-спам кулдаун
         if (marketCooldownHit(chatId, symbol, side)) {
             log.info("⏳ MARKET cooldown: {} {} qty={} — пропускаем повтор", symbol, side, quantity);
             return new Order("SKIPPED-COOLDOWN", symbol, side, 0.0, quantity, false, false, false);
@@ -107,7 +105,17 @@ public class ExchangeOrderServiceImpl implements OrderService {
             ExchangeClient client = clientFactory.getClient(settings.getExchange());
 
             String id = order.getId();
-            client.cancelOrder(keys.getPublicKey(), keys.getSecretKey(), settings.getNetwork(), order.getSymbol(), id);
+
+            client.cancelOrder(
+                    String.valueOf(settings.getExchange()),
+                    order.getSymbol(),
+                    keys.getPublicKey(),
+                    keys.getSecretKey(),
+                    settings.getNetwork(),
+                    id,
+                    null // clientOrderId (если у тебя есть — подставь здесь)
+            );
+
             order.setCancelled(true);
             log.info("Ордер отменён: id={}, symbol={}", id, order.getSymbol());
         } catch (Exception e) {
@@ -171,7 +179,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
                 String statusNorm = normalizeStatus(oi.getStatus());
                 boolean filled    = "FILLED".equals(statusNorm) || (executed >= origQty && origQty > 0.0);
                 boolean canceled  = "CANCELED".equals(statusNorm) || "CANCELLED".equals(statusNorm)
-                        || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm);
+                                    || "EXPIRED".equals(statusNorm) || "REJECTED".equals(statusNorm);
 
                 if (!canceled) {
                     result.add(new Order(
@@ -179,7 +187,7 @@ public class ExchangeOrderServiceImpl implements OrderService {
                             oi.getSymbol(),
                             side,
                             price,
-                            origQty,   // ВАЖНО: объём ордера — это исходный объём, а не executed
+                            origQty,   // объём ордера — исходный объём
                             filled,
                             false,
                             false
@@ -222,8 +230,13 @@ public class ExchangeOrderServiceImpl implements OrderService {
             }
 
             try {
-                var opt = client.fetchOrder(keys.getPublicKey(), keys.getSecretKey(),
-                        settings.getNetwork(), symbol, id);
+                var opt = client.fetchOrder(
+                        keys.getPublicKey(),
+                        keys.getSecretKey(),
+                        settings.getNetwork(),
+                        symbol,
+                        id
+                );
 
                 if (opt.isEmpty()) {
                     o.setCancelled(true);
@@ -236,15 +249,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
                 double executed = st.getExecutedQty() == null ? 0.0 : st.getExecutedQty().doubleValue();
                 double origQty  = st.getOrigQty() == null ? 0.0 : st.getOrigQty().doubleValue();
 
-                // НЕ перезаписываем объём ордера executed-количеством!
-                // if (executed > 0.0) o.setVolume(executed);  ← это было источником qty=0E-8 в логах
-
                 if ("FILLED".equals(status) || (executed >= origQty && origQty > 0.0)) {
                     o.setFilled(true);
                     o.setClosed(true);
                     log.info("refresh: FILLED id={}, executed={}/{}", id, executed, origQty);
                 } else if ("CANCELED".equals(status) || "CANCELLED".equals(status)
-                        || "EXPIRED".equals(status) || "REJECTED".equals(status)) {
+                           || "EXPIRED".equals(status) || "REJECTED".equals(status)) {
                     o.setCancelled(true);
                     log.info("refresh: {} id={} → помечаем отменённым", status, id);
                 } else {

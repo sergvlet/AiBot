@@ -288,27 +288,52 @@ public class BybitExchangeClient implements ExchangeClient {
         }
     }
 
-    /* ===== Отмена ордера ===== */
+    /* ===== Отмена ордера (соответствует ExchangeClient) ===== */
     @Override
-    public boolean cancelOrder(String apiKey, String secretKey, NetworkType network, String symbol, String orderId) {
+    public void cancelOrder(String exchange,
+                            String symbol,
+                            String apiKey,
+                            String secretKey,
+                            NetworkType network,
+                            String orderId,
+                            String clientOrderId) {
         try {
+            if (symbol == null || symbol.isBlank()) {
+                throw new IllegalArgumentException("symbol is empty");
+            }
+            if ((orderId == null || orderId.isBlank()) &&
+                (clientOrderId == null || clientOrderId.isBlank())) {
+                throw new IllegalArgumentException("Both orderId and clientOrderId are empty");
+            }
+
             Map<String,Object> body = new LinkedHashMap<>();
             body.put("category", "spot");
             body.put("symbol", symbol);
-            body.put("orderId", orderId);
+
+            // Bybit: можно передать ИЛИ orderId, ИЛИ orderLinkId (это наш clientOrderId)
+            if (orderId != null && !orderId.isBlank()) {
+                body.put("orderId", orderId);
+            } else {
+                body.put("orderLinkId", clientOrderId);
+            }
 
             String url = baseUrl(network) + "/v5/order/cancel";
+
             JsonNode root = signedPost(url, body, apiKey, secretKey);
             int ret = root.path("retCode").asInt(-1);
             if (ret != 0) {
-                log.warn("Bybit cancelOrder retCode={}, msg={}", ret, root.path("retMsg").asText());
+                log.warn("Bybit cancelOrder retCode={}, msg={}, result={}",
+                        ret, root.path("retMsg").asText(), root.path("result").toString());
+            } else {
+                log.info("✅ Bybit cancel OK: exch={}, symbol={}, orderId={}, clientOrderId={}",
+                        exchange, symbol, orderId, clientOrderId);
             }
-            return ret == 0;
         } catch (Exception ex) {
             log.error("❌ Bybit cancelOrder failed: {}", ex.getMessage(), ex);
-            return false;
+            throw new RuntimeException("Failed to cancel Bybit order", ex);
         }
     }
+
 
     /* ===== Открытые ордера ===== */
     @Override

@@ -8,7 +8,9 @@ public enum StrategyType {
     FIBONACCI_GRID("Fibonacci Grid"),
     RSI_EMA("RSI + EMA"),
     MA_CROSSOVER("MA Crossover"),
-    BOLLINGER_BANDS("Bollinger Bands");
+    BOLLINGER_BANDS("Bollinger Bands"),
+    MACHINE_LEARNING_INVEST("Machine Learning Invest");
+
 
     private final String label;
     StrategyType(String label) { this.label = label; }

@@ -14,7 +14,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
 import java.util.List;
 import java.util.Optional;
@@ -25,11 +24,27 @@ import static com.chicu.aibot.bot.menu.feature.ai.strategy.view.PanelTextUtils.*
 @RequiredArgsConstructor
 public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
 
-    public static final String NAME = "ai_trading_scalping_config";
-    public static final String BTN_REFRESH = "scalp_refresh";
-    public static final String BTN_EDIT_SYMBOL = "scalp_edit_symbol";
-    public static final String BTN_TOGGLE = "scalp_toggle_active";
-    public static final String BTN_HELP = "scalp_help";
+    public static final String NAME               = "ai_trading_scalping_config";
+
+    // Основные кнопки
+    public static final String BTN_REFRESH        = "scalp_refresh";
+    public static final String BTN_HELP           = "scalp_help";
+    public static final String BTN_EDIT_SYMBOL    = "scalp_edit_symbol";
+    public static final String BTN_TOGGLE_ACTIVE  = "scalp_toggle_active";
+
+    // Кнопки редактирования параметров
+    public static final String BTN_EDIT_TF        = "scalp_edit_timeframe";
+    public static final String BTN_EDIT_ORDER_VOL = "scalp_edit_orderVolume";
+    public static final String BTN_EDIT_HISTORY   = "scalp_edit_cachedCandlesLimit";
+    public static final String BTN_EDIT_WINDOW    = "scalp_edit_windowSize";
+    public static final String BTN_EDIT_DELTA_PCT = "scalp_edit_priceChangeThreshold";
+    public static final String BTN_EDIT_SPREAD_PCT= "scalp_edit_spreadThreshold";
+    public static final String BTN_EDIT_TP        = "scalp_edit_takeProfitPct";
+    public static final String BTN_EDIT_SL        = "scalp_edit_stopLossPct";
+
+    // Кнопки управления ордерами
+    public static final String BTN_CANCEL_NEAREST = "scalp_cancel_nearest";
+    public static final String BTN_CANCEL_ALL     = "scalp_cancel_all";
 
     private final ScalpingStrategySettingsService settingsService;
     private final MarketLiveService liveService;
@@ -42,10 +57,12 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
         String symbol = nvl(s.getSymbol());
         LiveSnapshot live = liveService.build(chatId, symbol);
 
+        // PnL из журнала сделок (как в Bollinger)
         Optional<TradeLogEntry> lastTradeOpt = tradeLogService.getLastTrade(chatId, symbol);
         String pnlBlock = lastTradeOpt.map(last -> buildPnlBlock(last, symbol, live)).orElse("_нет сделок_");
         String totalPnlBlock = formatTotalPnl(tradeLogService.getTotalPnl(chatId, symbol));
 
+        // Открытые ордера
         List<ExchangeOrderEntity> openOrders = orderDb.findOpenByChatAndSymbol(chatId, symbol);
         String openOrdersBlock = formatOpenOrdersBlock(openOrders);
 
@@ -79,50 +96,53 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
                 symbol,
                 live.getChangePct() >= 0 ? "📈" : "📉",
-                live.getChangeStr(),
-                live.getPriceStr(),
-                live.getBase(), live.getBaseBal(),
-                live.getQuote(), live.getQuoteBal(),
+                nvl(live.getChangeStr()),
+                nvl(live.getPriceStr()),
+                nvl(live.getBase()), nvl(live.getBaseBal()),
+                nvl(live.getQuote()), nvl(live.getQuoteBal()),
                 pnlBlock,
                 totalPnlBlock,
                 openOrders.size(),
                 openOrdersBlock,
-                s.getOrderVolume(),
-                s.getTimeframe(),
-                s.getCachedCandlesLimit(),
-                s.getWindowSize(),
-                s.getPriceChangeThreshold(),
-                s.getSpreadThreshold(),
-                s.getTakeProfitPct(),
-                s.getStopLossPct(),
+                safeD(s.getOrderVolume()),
+                nvl(s.getTimeframe()),
+                safeI(s.getCachedCandlesLimit()),
+                safeI(s.getWindowSize()),
+                safeD(s.getPriceChangeThreshold()),
+                safeD(s.getSpreadThreshold()),
+                safeD(s.getTakeProfitPct()),
+                safeD(s.getStopLossPct()),
                 s.isActive() ? "🟢 Запущена" : "🔴 Остановлена"
         );
 
+        // Компактная раскладка (по 3 в ряд)
         InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(
                 List.of(
-                        button("ℹ️ Описание", BTN_HELP),
-                        button("⏱ Обновить", BTN_REFRESH)
+                        AdaptiveKeyboard.btn("‹ Назад", "ai_trading"),
+                        AdaptiveKeyboard.btn("⏱ Обновить", BTN_REFRESH),
+                        AdaptiveKeyboard.btn("ℹ️ Описание", BTN_HELP)
                 ),
                 List.of(
-                        button("🎯 Символ", BTN_EDIT_SYMBOL),
-                        button("⏱ Таймфрейм", "scalp_edit_timeframe"),
-                        button("💰 Объём %", "scalp_edit_orderVolume"),
-                        button("📋 История", "scalp_edit_cachedCandlesLimit")
+                        AdaptiveKeyboard.btn("🎯 Символ", BTN_EDIT_SYMBOL),
+                        AdaptiveKeyboard.btn("⏱ ТФ", BTN_EDIT_TF),
+                        AdaptiveKeyboard.btn("📋 История", BTN_EDIT_HISTORY)
                 ),
                 List.of(
-                        button("🪟 Окно", "scalp_edit_windowSize"),
-                        button("⚡ ΔЦены %", "scalp_edit_priceChangeThreshold"),
-                        button("↔️ Спред %", "scalp_edit_spreadThreshold")
+                        AdaptiveKeyboard.btn("💰 Объём %", BTN_EDIT_ORDER_VOL),
+                        AdaptiveKeyboard.btn("🪟 Окно", BTN_EDIT_WINDOW),
+                        AdaptiveKeyboard.btn("⚡ ΔЦены %", BTN_EDIT_DELTA_PCT)
                 ),
                 List.of(
-                        button("🎯 TP %", "scalp_edit_takeProfitPct"),
-                        button("🛡 SL %", "scalp_edit_stopLossPct")
+                        AdaptiveKeyboard.btn("↔️ Спред %", BTN_EDIT_SPREAD_PCT),
+                        AdaptiveKeyboard.btn("🎯 TP %", BTN_EDIT_TP),
+                        AdaptiveKeyboard.btn("🛡 SL %", BTN_EDIT_SL)
                 ),
                 List.of(
-                        button(s.isActive() ? "🔴 Остановить стратегию" : "🟢 Запустить стратегию", BTN_TOGGLE),
-                        button("‹ Назад", "ai_trading")
+                        AdaptiveKeyboard.btn("❌ Ближайший ордер", BTN_CANCEL_NEAREST),
+                        AdaptiveKeyboard.btn("🧹 Отменить все", BTN_CANCEL_ALL),
+                        AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить" : "🟢 Запустить", BTN_TOGGLE_ACTIVE)
                 )
-        ));
+        ), 3);
 
         return SendMessage.builder()
                 .chatId(chatId.toString())
@@ -133,7 +153,7 @@ public class ScalpingPanelRendererImpl implements ScalpingPanelRenderer {
                 .build();
     }
 
-    private InlineKeyboardButton button(String text, String data) {
-        return InlineKeyboardButton.builder().text(text).callbackData(data).build();
-    }
+    /* ===== локальные безопасные хелперы, как в других панелях ===== */
+    private static int safeI(Integer v) { return v == null ? 0 : v; }
+    private static double safeD(Double v) { return v == null ? 0d : v; }
 }

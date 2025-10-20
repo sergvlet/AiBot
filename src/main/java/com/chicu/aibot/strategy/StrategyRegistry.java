@@ -2,6 +2,7 @@ package com.chicu.aibot.strategy;
 
 import com.chicu.aibot.strategy.bollinger.BollingerBandsStrategy;
 import com.chicu.aibot.strategy.fibonacci.FibonacciGridStrategy;
+import com.chicu.aibot.strategy.ml_invest.MachineLearningInvestStrategy;
 import com.chicu.aibot.strategy.scalping.ScalpingStrategy;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -21,14 +22,16 @@ public class StrategyRegistry {
     private final FibonacciGridStrategy fibonacciGridStrategy;
     private final ScalpingStrategy scalpingStrategy;
     private final BollingerBandsStrategy bollingerBandsStrategy;
+    private final MachineLearningInvestStrategy machineLearningInvestStrategy;
 
     private final Map<StrategyType, TradingStrategy> strategyMap = new EnumMap<>(StrategyType.class);
 
     @PostConstruct
     public void init() {
-        strategyMap.put(StrategyType.FIBONACCI_GRID, fibonacciGridStrategy);
-        strategyMap.put(StrategyType.SCALPING,       scalpingStrategy);
-        strategyMap.put(StrategyType.BOLLINGER_BANDS, bollingerBandsStrategy);
+        strategyMap.put(StrategyType.FIBONACCI_GRID,     fibonacciGridStrategy);
+        strategyMap.put(StrategyType.SCALPING,           scalpingStrategy);
+        strategyMap.put(StrategyType.BOLLINGER_BANDS,    bollingerBandsStrategy);
+        strategyMap.put(StrategyType.MACHINE_LEARNING_INVEST, machineLearningInvestStrategy);
     }
 
     /** Получение стратегии по enum-типу */

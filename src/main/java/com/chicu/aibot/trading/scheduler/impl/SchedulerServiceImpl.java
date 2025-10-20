@@ -6,6 +6,8 @@ import com.chicu.aibot.bot.menu.feature.ai.strategy.bollinger.BollingerConfigSta
 import com.chicu.aibot.bot.menu.feature.ai.strategy.bollinger.service.BollingerPanelRenderer;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.FibonacciGridConfigState;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.fibonacci.service.FibonacciGridPanelRenderer;
+import com.chicu.aibot.bot.menu.feature.ai.strategy.ml_invest.AiTradingMlInvestConfigState;                // 👈 добавлено
+import com.chicu.aibot.bot.menu.feature.ai.strategy.ml_invest.service.MlInvestPanelRenderer;              // 👈 добавлено
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.ScalpingConfigState;
 import com.chicu.aibot.bot.menu.feature.ai.strategy.scalping.service.ScalpingPanelRenderer;
 import com.chicu.aibot.strategy.StrategyRegistry;
@@ -14,6 +16,8 @@ import com.chicu.aibot.strategy.bollinger.model.BollingerStrategySettings;
 import com.chicu.aibot.strategy.bollinger.repository.BollingerStrategySettingsRepository;
 import com.chicu.aibot.strategy.fibonacci.model.FibonacciGridStrategySettings;
 import com.chicu.aibot.strategy.fibonacci.repository.FibonacciGridStrategySettingsRepository;
+import com.chicu.aibot.strategy.ml_invest.model.MachineLearningInvestStrategySettings;                      // 👈 добавлено
+import com.chicu.aibot.strategy.ml_invest.repository.MachineLearningInvestStrategySettingsRepository;     // 👈 добавлено
 import com.chicu.aibot.strategy.scalping.model.ScalpingStrategySettings;
 import com.chicu.aibot.strategy.scalping.repository.ScalpingStrategySettingsRepository;
 import com.chicu.aibot.trading.scheduler.SchedulerService;
@@ -49,10 +53,13 @@ public class SchedulerServiceImpl implements SchedulerService {
     private final ScalpingStrategySettingsRepository scalpingRepo;
     private final FibonacciGridStrategySettingsRepository fibRepo;
     private final BollingerStrategySettingsRepository bollRepo;
+    private final MachineLearningInvestStrategySettingsRepository mlRepo; // 👈 добавлено
 
+    // панели
     private final ObjectProvider<ScalpingPanelRenderer> scalpingPanel;
     private final ObjectProvider<FibonacciGridPanelRenderer> fibPanel;
     private final ObjectProvider<BollingerPanelRenderer> bollPanel;
+    private final ObjectProvider<MlInvestPanelRenderer> mlPanel;         // 👈 добавлено
 
     private final ObjectProvider<TelegramBot> botProvider;
     private final MenuSessionService sessionService;
@@ -72,7 +79,6 @@ public class SchedulerServiceImpl implements SchedulerService {
 
     private static final AtomicLong SCHEDULER_THREAD_SEQ = new AtomicLong();
 
-
     /** Определение таймфрейма по имени стратегии. */
     private final Map<String, Function<Long, String>> timeframeResolvers = new HashMap<>();
 
@@ -82,8 +88,7 @@ public class SchedulerServiceImpl implements SchedulerService {
     /**
      * Определение UI-панели (рендерера) и имени состояния меню для автообновления.
      */
-        private record UiMeta(String stateName, Supplier<Optional<? extends PanelRendererAdapter>> renderer) {
-    }
+    private record UiMeta(String stateName, Supplier<Optional<? extends PanelRendererAdapter>> renderer) { }
     /** Небольшой адаптер, чтобы не зависеть от конкретных интерфейсов рендереров. */
     public interface PanelRendererAdapter {
         SendMessage render(Long chatId);
@@ -103,6 +108,7 @@ public class SchedulerServiceImpl implements SchedulerService {
         this.scheduler.setRemoveOnCancelPolicy(true);
         log.info("Планировщик инициализирован: {} поток(а/ов)", threads);
 
+        // -------- резолверы таймфрейма ----------
         timeframeResolvers.put("SCALPING", id ->
                 scalpingRepo.findById(id).orElseThrow(() ->
                         new IllegalStateException("Scalping settings not found for chatId=" + id)).getTimeframe()
@@ -115,26 +121,34 @@ public class SchedulerServiceImpl implements SchedulerService {
                 bollRepo.findById(id).orElseThrow(() ->
                         new IllegalStateException("Bollinger settings not found for chatId=" + id)).getTimeframe()
         );
+        timeframeResolvers.put("MACHINE_LEARNING_INVEST", id ->                                          // 👈 добавлено
+                mlRepo.findById(id).orElseThrow(() ->
+                        new IllegalStateException("ML-Invest settings not found for chatId=" + id)).getTimeframe()
+        );
 
+        // -------- автозапуск активных из БД ----------
         autostartSuppliers.put("SCALPING", () ->
                 scalpingRepo.findAll().stream().filter(ScalpingStrategySettings::isActive).map(ScalpingStrategySettings::getChatId));
         autostartSuppliers.put("FIBONACCI_GRID", () ->
                 fibRepo.findAll().stream().filter(FibonacciGridStrategySettings::isActive).map(FibonacciGridStrategySettings::getChatId));
         autostartSuppliers.put("BOLLINGER_BANDS", () ->
                 bollRepo.findAll().stream().filter(BollingerStrategySettings::isActive).map(BollingerStrategySettings::getChatId));
+        autostartSuppliers.put("MACHINE_LEARNING_INVEST", () ->                                          // 👈 добавлено
+                mlRepo.findAll().stream().filter(MachineLearningInvestStrategySettings::isActive).map(MachineLearningInvestStrategySettings::getChatId));
 
         // ---- UI-автообновление для всех поддержанных стратегий ----
         uiByStrategy.put("SCALPING",
                 new UiMeta(ScalpingConfigState.NAME,
                         () -> scalpingPanel.stream().findFirst().map(p -> p::render)));
-
         uiByStrategy.put("FIBONACCI_GRID",
                 new UiMeta(FibonacciGridConfigState.NAME,
                         () -> fibPanel.stream().findFirst().map(p -> p::render)));
-
         uiByStrategy.put("BOLLINGER_BANDS",
                 new UiMeta(BollingerConfigState.NAME,
                         () -> bollPanel.stream().findFirst().map(p -> p::render)));
+        uiByStrategy.put("MACHINE_LEARNING_INVEST",                                                       // 👈 добавлено
+                new UiMeta(AiTradingMlInvestConfigState.NAME,
+                        () -> mlPanel.stream().findFirst().map(p -> p::render)));
 
         startUiAutorefreshIfNeeded();
         startActiveFromDbIfEnabled();

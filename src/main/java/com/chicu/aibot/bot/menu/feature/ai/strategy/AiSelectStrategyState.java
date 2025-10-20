@@ -41,6 +41,8 @@ public class AiSelectStrategyState implements MenuState {
                 case RSI_EMA -> "ai_trading_rsi_ema_config";
                 case MA_CROSSOVER -> "ai_trading_ma_crossover_config";
                 case BOLLINGER_BANDS -> "ai_trading_bollinger_config";
+                case MACHINE_LEARNING_INVEST -> "ai_trading_ml_invest_config";
+
             };
 
             rows.add(List.of(

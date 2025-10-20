@@ -96,7 +96,12 @@ public interface ExchangeClient {
     /**
      * Отменить ордер
      */
-    default boolean cancelOrder(String apiKey, String secretKey, NetworkType network, String symbol, String orderId) {
-        return false;
-    }
+    void cancelOrder(String apiKey,
+                     String secretKey,
+                     String exchange,
+                     String symbol,
+                     NetworkType network,
+                     String orderId,
+                     String clientOrderId);
+
 }

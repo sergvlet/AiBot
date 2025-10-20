@@ -37,8 +37,8 @@ public class BinanceExchangeClient implements ExchangeClient {
     private String testnetBaseUrl;
 
     private static final String RECV_WINDOW = "5000";
-    private static final long TIME_SYNC_PERIOD_MS = 60_000L; // 1 минута
-    private volatile long timeOffsetMs = 0L;                  // server - local(mid)
+    private static final long TIME_SYNC_PERIOD_MS = 60_000L;
+    private volatile long timeOffsetMs = 0L;
     private volatile long lastSyncAtMs = 0L;
 
     private final RestTemplate rest;
@@ -57,7 +57,6 @@ public class BinanceExchangeClient implements ExchangeClient {
         return URLEncoder.encode(v, StandardCharsets.UTF_8);
     }
 
-    /** Заголовки для GET: Content-Type не выставляем, только API key и Accept. */
     private HttpHeaders apiKeyHeader(String apiKey) {
         HttpHeaders h = new HttpHeaders();
         h.set("X-MBX-APIKEY", apiKey);
@@ -65,7 +64,6 @@ public class BinanceExchangeClient implements ExchangeClient {
         return h;
     }
 
-    /** Заголовки для POST/DELETE: form Content-Type только здесь. */
     private HttpHeaders apiKeyFormHeader(String apiKey) {
         HttpHeaders h = new HttpHeaders();
         h.set("X-MBX-APIKEY", apiKey);
@@ -87,12 +85,11 @@ public class BinanceExchangeClient implements ExchangeClient {
     }
 
     private ResponseEntity<String> doGet(String url, HttpHeaders headers) {
-        // Никакого body для GET
         return rest.exchange(url, HttpMethod.GET, new HttpEntity<Void>(headers), String.class);
     }
 
     private ResponseEntity<String> doPost(String url, HttpHeaders headers) {
-        // Пустое body строкой для корректной отправки с form Content-Type
+        // Binance принимает параметры в query. Тело пустое — ок.
         return rest.exchange(url, HttpMethod.POST, new HttpEntity<>("", headers), String.class);
     }
 
@@ -135,16 +132,16 @@ public class BinanceExchangeClient implements ExchangeClient {
     private static boolean isTimestampError(Throwable e) {
         if (e instanceof HttpClientErrorException he) {
             String body = he.getResponseBodyAsString();
-            return body.contains("\"code\":-1021");
+            return body != null && body.contains("\"code\":-1021");
         }
         return false;
     }
 
-    /** Универсальный вызов подписанного эндпоинта с авто-ретраем при -1021. */
+    /** Подписанный вызов с авто-ретраем при -1021. */
     private String signedRequest(
             NetworkType n,
             String path,
-            String partialQuery,       // без recvWindow/timestamp/signature
+            String partialQuery,
             String apiKey,
             String secretKey,
             HttpMethod method
@@ -152,9 +149,7 @@ public class BinanceExchangeClient implements ExchangeClient {
         String base = baseUrl(n) + path;
 
         String pq = (partialQuery == null) ? "" : partialQuery.trim();
-        if (pq.endsWith("&")) {
-            pq = pq.substring(0, pq.length() - 1); // убрать хвостовой &
-        }
+        if (pq.endsWith("&")) pq = pq.substring(0, pq.length() - 1);
 
         long ts = nowMs(n);
         String q1 = buildQuery(pq, ts);
@@ -185,9 +180,7 @@ public class BinanceExchangeClient implements ExchangeClient {
         StringBuilder sb = new StringBuilder();
         if (partialQuery != null && !partialQuery.isBlank()) {
             sb.append(partialQuery);
-            if (partialQuery.charAt(partialQuery.length() - 1) != '&') {
-                sb.append('&');
-            }
+            if (partialQuery.charAt(partialQuery.length() - 1) != '&') sb.append('&');
         }
         sb.append("recvWindow=").append(RECV_WINDOW)
           .append("&timestamp=").append(timestamp);
@@ -232,18 +225,26 @@ public class BinanceExchangeClient implements ExchangeClient {
     private final ConcurrentMap<String, BnFilters> filtersCache = new ConcurrentHashMap<>();
 
     private BnFilters getFilters(NetworkType n, String symbol) {
-        return filtersCache.computeIfAbsent(n.name() + ":" + symbol, k -> fetchFilters(n, symbol));
+        BnFilters f = filtersCache.computeIfAbsent(n.name() + ":" + symbol, k -> fetchFilters(n, symbol));
+        // корректная проверка record-аксессоров с ()
+        if (f.baseAsset() == null || f.quoteAsset() == null || f.tickSize() == null || f.stepSize() == null) {
+            throw new IllegalArgumentException("Invalid or unsupported symbol on " + n + ": " + symbol);
+        }
+        return f;
     }
 
     private BnFilters fetchFilters(NetworkType network, String symbol) {
         try {
             String url = baseUrl(network) + "/api/v3/exchangeInfo?symbol=" + enc(symbol);
-            JsonNode sym = parseJson(rest.getForObject(url, String.class)).path("symbols");
-            if (!sym.isArray() || sym.isEmpty()) throw new IllegalStateException("No exchangeInfo for " + symbol);
-            JsonNode s = sym.get(0);
+            JsonNode root = parseJson(rest.getForObject(url, String.class));
+            JsonNode symbols = root.path("symbols");
+            if (!symbols.isArray() || symbols.isEmpty()) {
+                throw new IllegalStateException("No exchangeInfo for " + symbol);
+            }
+            JsonNode s = symbols.get(0);
 
-            String base = s.path("baseAsset").asText();
-            String quote = s.path("quoteAsset").asText();
+            String base = s.path("baseAsset").asText(null);
+            String quote = s.path("quoteAsset").asText(null);
 
             BigDecimal tickSize = null, stepSize = null, minQty = null, minNotional = null;
             for (JsonNode f : s.path("filters")) {
@@ -270,16 +271,16 @@ public class BinanceExchangeClient implements ExchangeClient {
         }
     }
 
-    /** Квантизация вниз к ближайшему кратному шагу. */
+    /** Вниз к шагу. */
     private static BigDecimal quantizeDown(BigDecimal value, BigDecimal step) {
         if (value == null || step == null || step.signum() == 0) return value;
         int scale = Math.max(0, step.stripTrailingZeros().scale());
         BigDecimal[] div = value.divideAndRemainder(step);
         BigDecimal floored = div[0].multiply(step);
-        return floored.setScale(scale, RoundingMode.DOWN).stripTrailingZeros();
+        return floored.setScale(scale, RoundingMode.DOWN);
     }
 
-    /** Квантизация вверх к ближайшему кратному шагу (важно для minNotional/minQty). */
+    /** Вверх к шагу. */
     private static BigDecimal quantizeUp(BigDecimal value, BigDecimal step) {
         if (value == null || step == null || step.signum() == 0) return value;
         int scale = Math.max(0, step.stripTrailingZeros().scale());
@@ -287,7 +288,7 @@ public class BinanceExchangeClient implements ExchangeClient {
         BigDecimal base = div[0].multiply(step);
         boolean needsUp = div[1].signum() != 0;
         BigDecimal res = needsUp ? base.add(step) : base;
-        return res.setScale(scale, RoundingMode.DOWN).stripTrailingZeros();
+        return res.setScale(scale, RoundingMode.DOWN);
     }
 
     private BigDecimal lastPrice(NetworkType n, String symbol) {
@@ -353,17 +354,17 @@ public class BinanceExchangeClient implements ExchangeClient {
     public OrderResponse placeOrder(String apiKey, String secretKey, NetworkType n, OrderRequest req) {
         try {
             String symbol = req.getSymbol();
-            BnFilters f = getFilters(n, symbol);
-            if (f.tickSize() == null || f.stepSize() == null) {
-                throw new RuntimeException("Binance filters not available for " + symbol);
-            }
 
-            BigDecimal priceEff = "MARKET".equals(req.getType().name())
-                    ? lastPrice(n, symbol)
-                    : req.getPrice();
+            BnFilters f = getFilters(n, symbol);
+
+            boolean isMarket = "MARKET".equals(req.getType().name());
+            BigDecimal priceEff = isMarket ? lastPrice(n, symbol) : req.getPrice();
 
             if (priceEff == null || priceEff.signum() <= 0) {
-                throw new IllegalArgumentException("No price available for " + symbol);
+                if (isMarket) priceEff = lastPrice(n, symbol);
+                if (priceEff == null || priceEff.signum() <= 0) {
+                    throw new IllegalArgumentException("No price available for " + symbol);
+                }
             }
 
             BigDecimal qtyNorm   = quantizeDown(req.getQuantity(), f.stepSize());
@@ -377,7 +378,6 @@ public class BinanceExchangeClient implements ExchangeClient {
             BigDecimal baseFree  = bals.getOrDefault(f.baseAsset(), BigDecimal.ZERO);
             BigDecimal quoteFree = bals.getOrDefault(f.quoteAsset(), BigDecimal.ZERO);
 
-            // собираем часть query без timestamp/recvWindow/signature
             StringBuilder pq = new StringBuilder()
                     .append("symbol=").append(enc(symbol))
                     .append("&side=").append(req.getSide().name())
@@ -387,8 +387,9 @@ public class BinanceExchangeClient implements ExchangeClient {
                 case "MARKET" -> {
                     if ("BUY".equals(req.getSide().name())) {
                         BigDecimal desiredSpend = (qtyNorm == null || qtyNorm.signum() == 0)
-                                ? quoteFree
+                                ? minNotional.max(BigDecimal.ZERO)
                                 : priceEff.multiply(qtyNorm);
+
                         BigDecimal spend = desiredSpend.min(quoteFree);
                         if (spend.compareTo(minNotional) < 0) {
                             throw new RuntimeException("Pre-check: quote balance below minNotional for MARKET BUY");
@@ -560,6 +561,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<OrderInfo> getOpenOrders(String apiKey, String secretKey, NetworkType n, String symbol) {
         try {
+            getFilters(n, symbol);
             String body = signedGet(n, "/api/v3/openOrders", "symbol=" + enc(symbol), apiKey, secretKey);
             JsonNode arr = parseJson(body);
             List<OrderInfo> list = new ArrayList<>();
@@ -613,6 +615,7 @@ public class BinanceExchangeClient implements ExchangeClient {
     @Override
     public List<OrderInfo> fetchOpenOrders(String apiKey, String secretKey, NetworkType n, String symbol) {
         try {
+            getFilters(n, symbol);
             String body = signedGet(n, "/api/v3/openOrders", "symbol=" + enc(symbol), apiKey, secretKey);
             JsonNode arr = parseJson(body);
             List<OrderInfo> out = new ArrayList<>();
@@ -660,33 +663,49 @@ public class BinanceExchangeClient implements ExchangeClient {
         }
     }
 
+    /* ===== Отмена ордера (соответствует ExchangeClient) ===== */
     @Override
-    public boolean cancelOrder(String exchange,
-                               String symbol,
-                               NetworkType network,
-                               String orderId,
-                               String clientOrderId) {
-        // Если есть биржевой orderId — используем его.
-        // Иначе используем origClientOrderId.
-        Map<String, String> params = new HashMap<>();
-        params.put("symbol", symbol);
-
-        if (orderId != null && !orderId.isBlank()) {
-            params.put("orderId", orderId);
-        } else if (clientOrderId != null && !clientOrderId.isBlank()) {
-            params.put("origClientOrderId", clientOrderId);
-        } else {
-            // вообще нет идентификатора — нечего отправлять на биржу
+    public void cancelOrder(String exchange,
+                            String symbol,
+                            String apiKey,
+                            String secretKey,
+                            NetworkType network,
+                            String orderId,
+                            String clientOrderId) {
+        if (symbol == null || symbol.isBlank()) {
+            throw new IllegalArgumentException("symbol is empty");
+        }
+        if ((orderId == null || orderId.isBlank()) &&
+            (clientOrderId == null || clientOrderId.isBlank())) {
             throw new IllegalArgumentException("Both orderId and clientOrderId are empty");
         }
 
-        // ... тут ваш текущий код подписи запроса/вызова REST (DELETE /api/v3/order)
-        // например:
-        // signedDelete("/api/v3/order", params);
+        // Валидируем символ (подтянем фильтры/проверим существование)
+        getFilters(network, symbol);
 
-        log.info("Binance cancel sent: symbol={}, orderId={}, origClientOrderId={}",
-                symbol, params.get("orderId"), params.get("origClientOrderId"));
-        return false;
+        // Binance: можно отменять по orderId ИЛИ по origClientOrderId
+        String pq = "symbol=" + enc(symbol)
+                + ((orderId != null && !orderId.isBlank())
+                ? "&orderId=" + enc(orderId)
+                : "&origClientOrderId=" + enc(clientOrderId));
+
+        try {
+            signedDelete(network, pq, apiKey, secretKey);
+            log.info("✅ Binance cancel OK: exch={}, symbol={}, orderId={}, clientOrderId={}",
+                    exchange, symbol, orderId, clientOrderId);
+        } catch (HttpClientErrorException e) {
+            String body = e.getResponseBodyAsString();
+            // Трактуем «уже отменён / неизвестный» как успех
+            if (body.contains("\"code\":-2011") || body.contains("Unknown order")) {
+                log.info("ℹ️ Binance cancel treat as success (-2011/Unknown order). exch={}, symbol={}, orderId={}, clientOrderId={}",
+                        exchange, symbol, orderId, clientOrderId);
+                return;
+            }
+            log.error("❌ Binance cancel failed: status={}, body={}", e.getStatusCode(), body);
+            throw e;
+        } catch (Exception ex) {
+            log.error("❌ Binance cancel error: {}", ex.getMessage(), ex);
+            throw new RuntimeException("Failed to cancel Binance order", ex);
+        }
     }
-
 }
