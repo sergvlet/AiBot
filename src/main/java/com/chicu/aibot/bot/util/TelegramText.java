@@ -11,7 +11,7 @@ public final class TelegramText {
             String r = req.getApiResponse();
             String m = req.getMessage();
             return (r != null && r.contains("can't parse entities"))
-                    || (m != null && m.contains("can't parse entities"));
+                   || (m != null && m.contains("can't parse entities"));
         }
         return false;
     }
@@ -26,7 +26,7 @@ public final class TelegramText {
                 .replace("~", "");
     }
 
-    /** Экранируем базовые символы Markdown (если захотите сохранить форматирование в V1). */
+    /** Экранируем базовые символы Markdown (для Markdown V1). */
     public static String escapeMarkdownV1(String s) {
         if (s == null) return "";
         return s
@@ -38,5 +38,30 @@ public final class TelegramText {
                 .replace("(", "\\(")
                 .replace(")", "\\)")
                 .replace("`", "\\`");
+    }
+
+    /** ✅ Экранируем все специальные символы для MarkdownV2 (без ломки существующего кода). */
+    public static String escapeMarkdownV2(String s) {
+        if (s == null) return "";
+        return s
+                .replace("\\", "\\\\")
+                .replace("_", "\\_")
+                .replace("*", "\\*")
+                .replace("[", "\\[")
+                .replace("]", "\\]")
+                .replace("(", "\\(")
+                .replace(")", "\\)")
+                .replace("~", "\\~")
+                .replace("`", "\\`")
+                .replace(">", "\\>")
+                .replace("#", "\\#")
+                .replace("+", "\\+")
+                .replace("-", "\\-")
+                .replace("=", "\\=")
+                .replace("|", "\\|")
+                .replace("{", "\\{")
+                .replace("}", "\\}")
+                .replace(".", "\\.")
+                .replace("!", "\\!");
     }
 }

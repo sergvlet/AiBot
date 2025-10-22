@@ -2,29 +2,59 @@ package com.chicu.aibot.strategy.ml_invest;
 
 import com.chicu.aibot.strategy.StrategyType;
 import com.chicu.aibot.strategy.TradingStrategy;
-import com.chicu.aibot.strategy.model.Order;
 import com.chicu.aibot.strategy.ml_invest.model.MachineLearningInvestStrategySettings;
+import com.chicu.aibot.strategy.ml_invest.model.MlInvestModelState;
 import com.chicu.aibot.strategy.ml_invest.service.MachineLearningInvestStrategySettingsService;
+import com.chicu.aibot.strategy.ml_invest.service.MlDataPipelineService;
+import com.chicu.aibot.strategy.ml_invest.service.MlInvestModelStateService;
+import com.chicu.aibot.strategy.model.Order;
 import com.chicu.aibot.strategy.service.CandleService;
 import com.chicu.aibot.strategy.service.OrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Component;
 
-import java.lang.reflect.Method;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 
-@Slf4j
+/**
+ * Реализация стратегии MachineLearningInvest с автотренингом и сохранением состояния в БД.
+ */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class MachineLearningInvestStrategy implements TradingStrategy {
 
-    private final CandleService candleService;
-    private final OrderService orderService;
     private final MachineLearningInvestStrategySettingsService settingsService;
+    private final MlDataPipelineService pipeline;
+    private final MlInvestModelStateService modelStateService;
+    private final OrderService orderService;
+    private final CandleService candleService;
+
+    @Value("${ml.invest.retrainIfOlderThanHours:12}")
+    private int retrainIfOlderThanHours;
+
+    @Value("${ml.invest.evaluateEverySeconds:60}")
+    private int evaluateEverySeconds;
+
+    @Value("${ml.invest.maxStubCyclesBeforeRetrain:3}")
+    private int maxStubCyclesBeforeRetrain;
+
+    private final ThreadPoolTaskScheduler scheduler = createScheduler();
+
+    private final Map<Long, List<Order>> activeOrders = new ConcurrentHashMap<>();
+    private final Map<Long, List<String>> universeByChat = new ConcurrentHashMap<>();
+    private final Map<Long, String> modelRefByChat = new ConcurrentHashMap<>();
+    private final Map<Long, ScheduledFuture<?>> jobs = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> stubCounters = new ConcurrentHashMap<>();
+
+    /* ==================== TradingStrategy API ==================== */
 
     @Override
     public StrategyType getType() {
@@ -34,169 +64,220 @@ public class MachineLearningInvestStrategy implements TradingStrategy {
     @Override
     public void start(Long chatId) {
         MachineLearningInvestStrategySettings s = settingsService.getOrCreate(chatId);
+        MlInvestModelState state = modelStateService.getOrCreate(chatId);
 
-        // Быстрая валидация объёма, чтобы не гонять планировщик впустую
-        BigDecimal dryQty = resolveOrderQty(s, BigDecimal.ONE);
-        if (dryQty.signum() <= 0) {
-            log.warn("⚠️ [ML-Invest] Старт отклонён: не задан объём (режим={}, qty={}, quote={})",
-                    s.isUseQuoteAmount() ? "Quote" : "Qty", s.getOrderQty(), s.getOrderQuoteAmount());
-            return;
+        var universe = pipeline.pickUniverse(chatId, s.getTimeframe(), s.getUniverseSize(), s.getMin24hQuoteVolume());
+        universeByChat.put(chatId, universe);
+
+        // Загружаем существующую модель, если она готова
+        if ("ready".equalsIgnoreCase(state.getStatus()) && state.getModelPath() != null) {
+            modelRefByChat.put(chatId, state.getModelPath());
+            log.info("[ML] Использую модель из БД: {}", state.getModelPath());
+        } else {
+            log.info("[ML] Модель не найдена или устарела — запускаю обучение...");
+            retrainModel(chatId, s, universe);
         }
 
-        if (s.isActive()) {
-            log.info("ℹ️ [ML-Invest] Уже запущена: chatId={} symbol={} tf={}", chatId, s.getSymbol(), s.getTimeframe());
-            return;
-        }
-        s.setActive(true);
-        settingsService.save(s);
-        log.info("✅ [ML-Invest] Старт: chatId={} symbol={} tf={}", chatId, s.getSymbol(), s.getTimeframe());
+        activeOrders.computeIfAbsent(chatId, k -> new ArrayList<>());
+        stubCounters.put(chatId, 0);
+
+        cancelJob(chatId);
+        int sec = Math.max(10, evaluateEverySeconds);
+        var f = scheduler.scheduleAtFixedRate(() -> safeEval(chatId), Duration.ofSeconds(sec));
+        jobs.put(chatId, f);
+
+        log.info("[ML] start chatId={} universe(size={}) quota={} maxTrades={}",
+                chatId, universe.size(), s.getQuota(), s.getMaxTradesPerQuota());
     }
 
     @Override
     public void stop(Long chatId) {
-        MachineLearningInvestStrategySettings s = settingsService.getOrCreate(chatId);
-        if (!s.isActive()) {
-            log.info("ℹ️ [ML-Invest] Уже остановлена: chatId={}", chatId);
-            return;
-        }
-        s.setActive(false);
-        settingsService.save(s);
-        log.info("🛑 [ML-Invest] Стоп: chatId={}", chatId);
+        cancelJob(chatId);
+        activeOrders.remove(chatId);
+        universeByChat.remove(chatId);
+        modelRefByChat.remove(chatId);
+        stubCounters.remove(chatId);
+        log.info("[ML] stop chatId={}", chatId);
     }
 
     @Override
     public void onPriceUpdate(Long chatId, double price) {
-        MachineLearningInvestStrategySettings s = settingsService.getOrCreate(chatId);
-        if (s == null || !s.isActive()) return;
-
-        var candles = candleService.getCandles(chatId, s.getSymbol(), s.getTimeframe(), s.getCachedCandlesLimit());
-        if (candles == null || candles.isEmpty()) {
-            log.warn("⚠️ [ML-Invest] Пустые свечи: symbol={} tf={}", s.getSymbol(), s.getTimeframe());
-            return;
-        }
-
-        List<BigDecimal> closes = new ArrayList<>(candles.size());
-        for (Object c : candles) {
-            BigDecimal close = extractClose(c);
-            if (close != null) closes.add(close);
-        }
-        if (closes.size() < 2) return;
-        double[] features = computeFeatures(closes);
-
-        double pUp = callMlModel(s.getModelPath(), features);
-        double pDown = 1.0 - pUp;
-
-        double buyThr  = s.getBuyThreshold()  != null ? s.getBuyThreshold().doubleValue()  : 2.0;
-        double sellThr = s.getSellThreshold() != null ? s.getSellThreshold().doubleValue() : 2.0;
-
-        boolean buySignal  = Double.compare(pUp,   buyThr)  > 0;
-        boolean sellSignal = Double.compare(pDown, sellThr) > 0;
-
-        log.info("🤖 [ML-Invest] chatId={} {} pUp={} pDown={} buyThr={} sellThr={}, useQuoteAmount={}",
-                chatId, s.getSymbol(), round4(pUp), round4(pDown),
-                s.getBuyThreshold(), s.getSellThreshold(), s.isUseQuoteAmount());
-
-        BigDecimal qty = resolveOrderQty(s, BigDecimal.valueOf(price));
-        if (qty == null || qty.signum() <= 0) {
-            log.warn("⚠️ [ML-Invest] Пропуск: некорректный объём сделки (qty={})", qty);
-            return;
-        }
-
-        try {
-            if (buySignal && !sellSignal) {
-                orderService.placeMarket(chatId, s.getSymbol(), Order.Side.BUY, qty.doubleValue());
-                log.info("✅ [ML-Invest] BUY {} qty={}", s.getSymbol(), qty);
-            } else if (sellSignal && !buySignal) {
-                orderService.placeMarket(chatId, s.getSymbol(), Order.Side.SELL, qty.doubleValue());
-                log.info("✅ [ML-Invest] SELL {} qty={}", s.getSymbol(), qty);
-            } else {
-                log.debug("🟰 [ML-Invest] HOLD {}", s.getSymbol());
-            }
-        } catch (Exception ex) {
-            log.error("❌ [ML-Invest] Ошибка выставления ордера: {}", ex.getMessage(), ex);
-        }
+        // стратегия ML работает по расписанию
     }
 
     @Override
     public double getCurrentPrice(Long chatId) {
-        MachineLearningInvestStrategySettings s = settingsService.getOrCreate(chatId);
         try {
-            var candles = candleService.getCandles(chatId, s.getSymbol(), s.getTimeframe(), 1);
-            if (candles == null || candles.isEmpty()) return 0.0;
-            BigDecimal close = extractClose(candles.get(candles.size() - 1));
-            return close != null ? close.doubleValue() : 0.0;
+            var uni = universeByChat.get(chatId);
+            if (uni != null && !uni.isEmpty()) {
+                var candles = candleService.getCandles(chatId, uni.getFirst(),
+                        settingsService.getOrCreate(chatId).getTimeframe(), 1);
+                if (candles != null && !candles.isEmpty() && candles.getFirst().getClose() != null) {
+                    return candles.getFirst().getClose().doubleValue();
+                }
+            }
         } catch (Exception e) {
-            log.error("❌ [ML-Invest] getCurrentPrice error: {}", e.getMessage(), e);
-            return 0.0;
+            log.warn("[ML] getCurrentPrice error: {}", e.getMessage());
+        }
+        return 0.0;
+    }
+
+    /* ==================== внутренняя логика ==================== */
+
+    private void safeEval(Long chatId) {
+        try {
+            evaluateAll(chatId);
+        } catch (Exception e) {
+            log.warn("[ML] eval error: {}", e.getMessage());
         }
     }
 
-    /* ================= helpers ================= */
+    private void evaluateAll(Long chatId) {
+        var s = settingsService.getOrCreate(chatId);
+        var universe = universeByChat.getOrDefault(chatId, List.of());
+        if (universe.isEmpty()) return;
 
-    private static BigDecimal round4(double v) {
-        return BigDecimal.valueOf(v).setScale(4, RoundingMode.HALF_UP);
-    }
+        var modelRef = modelRefByChat.get(chatId);
+        if (modelRef == null) return;
 
-    private BigDecimal extractClose(Object candle) {
-        if (candle == null) return null;
-        try {
-            Method m = candle.getClass().getMethod("getClose");
-            Object val = m.invoke(candle);
-            if (val instanceof BigDecimal bd) return bd;
-            if (val instanceof Number n)     return BigDecimal.valueOf(n.doubleValue());
-            return (val != null) ? new BigDecimal(val.toString()) : null;
-        } catch (Exception e) {
-            log.error("❌ [ML-Invest] Не удалось прочитать close у {}: {}", candle.getClass().getName(), e.getMessage());
-            return null;
+        var proba = pipeline.predict(chatId, modelRef, universe, s.getTimeframe());
+        if (proba == null || proba.isEmpty()) {
+            handleStubModel(chatId);
+            return;
         }
-    }
 
-    private double[] computeFeatures(List<BigDecimal> closes) {
-        int n = closes.size();
-        double[] arr = new double[Math.max(0, n - 1)];
-        for (int i = 1; i < n; i++) {
-            BigDecimal prev = closes.get(i - 1);
-            BigDecimal curr = closes.get(i);
-            if (prev == null || prev.signum() == 0) {
-                arr[i - 1] = 0.0;
-            } else {
-                arr[i - 1] = curr.subtract(prev)
-                        .divide(prev, 8, RoundingMode.HALF_UP)
-                        .doubleValue();
+        Object maybeStatus = proba.get("status");
+
+        stubCounters.put(chatId, 0);
+
+        // === основная логика торговли ===
+        var ranked = proba.entrySet().stream()
+                .filter(e -> e.getValue() != null)
+                .sorted((a, b) -> Double.compare(b.getValue().buy, a.getValue().buy))
+                .toList();
+
+        var tradables = ranked.stream()
+                .limit(s.getTradeTopN())
+                .map(Map.Entry::getKey)
+                .toList();
+
+        BigDecimal posSize = positionSize(s.getQuota(), s.getMaxTradesPerQuota());
+
+        for (String sym : tradables) {
+            var p = proba.get(sym);
+            if (p == null) continue;
+            boolean buy = p.buy > p.sell && p.buy > 0.55;
+            boolean sell = p.sell > p.buy && p.sell > 0.55;
+            boolean hasOpen = hasOpenPosition(chatId, sym);
+
+            if (buy && !hasOpen && canOpenMore(chatId, s.getMaxTradesPerQuota())) {
+                placeMarket(chatId, sym, Order.Side.BUY, posSize);
+            } else if (sell && hasOpen) {
+                placeMarket(chatId, sym, Order.Side.SELL, posSize);
+                markClosed(chatId, sym);
             }
         }
-        return arr;
     }
 
-    private double callMlModel(String modelPath, double[] features) {
-        // TODO: заменить на PythonInferenceService/REST-инференс
-        return Math.random();
-    }
+    /** обработка случая, когда модель не готова */
+    private void handleStubModel(Long chatId) {
+        int count = stubCounters.getOrDefault(chatId, 0) + 1;
+        stubCounters.put(chatId, count);
+        log.info("[ML] Модель не готова ({} из {}) — наблюдение (chatId={})",
+                count, maxStubCyclesBeforeRetrain, chatId);
 
-    /**
-     * Расчёт объёма с fallback:
-     *  - если режим Qty: берём orderQty, иначе fallback к Quote;
-     *  - если режим Quote: qty = quote/price, иначе fallback к Qty.
-     */
-    private BigDecimal resolveOrderQty(MachineLearningInvestStrategySettings s, BigDecimal lastPrice) {
-        boolean wantQuote = s.isUseQuoteAmount();
-        BigDecimal qty;
-
-        if (!wantQuote) {
-            qty = (s.getOrderQty() != null && s.getOrderQty().signum() > 0) ? s.getOrderQty() : quoteToQty(s.getOrderQuoteAmount(), lastPrice);
-        } else {
-            qty = quoteToQty(s.getOrderQuoteAmount(), lastPrice);
-            if (qty.signum() <= 0 && s.getOrderQty() != null && s.getOrderQty().signum() > 0) {
-                qty = s.getOrderQty();
-            }
+        if (count >= maxStubCyclesBeforeRetrain) {
+            log.warn("[ML] Модель не обучена слишком долго — инициирую переобучение...");
+            var s = settingsService.getOrCreate(chatId);
+            var universe = universeByChat.getOrDefault(chatId, List.of());
+            retrainModel(chatId, s, universe);
+            stubCounters.put(chatId, 0);
         }
-        return (qty != null && qty.signum() > 0) ? qty : BigDecimal.ZERO;
     }
 
-    private BigDecimal quoteToQty(BigDecimal quote, BigDecimal lastPrice) {
-        if (quote == null || quote.signum() <= 0 || lastPrice == null || lastPrice.signum() <= 0) {
-            return BigDecimal.ZERO;
+    private void retrainModel(Long chatId, MachineLearningInvestStrategySettings s, List<String> universe) {
+        try {
+            var datasetPath = pipeline.buildTrainingDataset(chatId, universe, s.getTimeframe(), s.getTrainingWindowDays());
+            String newModel = pipeline.trainIfNeeded(chatId, datasetPath, Duration.ofHours(retrainIfOlderThanHours), true);
+
+            // сохраняем в БД состояние модели
+            var state = MlInvestModelState.builder()
+                    .chatId(chatId)
+                    .modelPath(newModel)
+                    .datasetPath(datasetPath.toString())
+                    .timeframe(s.getTimeframe())
+                    .trainingWindowDays(s.getTrainingWindowDays())
+                    .universeSize(universe.size())
+                    .lastTrainAt(LocalDateTime.now())
+                    .accuracy(BigDecimal.ONE) // TODO: заменить реальным accuracy
+                    .status("ready")
+                    .version("1.0.0")
+                    .build();
+
+            modelStateService.saveState(state);
+            modelRefByChat.put(chatId, newModel);
+
+            log.info("[ML] ✅ Авто-переобучение завершено (chatId={}, model={})", chatId, newModel);
+        } catch (Exception e) {
+            log.error("[ML] ❌ Ошибка авто-переобучения: {}", e.getMessage(), e);
         }
-        return quote.divide(lastPrice, 8, RoundingMode.DOWN);
+    }
+
+    private boolean isModelNotReady(String status) {
+        return switch (status.toLowerCase()) {
+            case "no_model", "stub_created", "empty_dataset",
+                 "dataset_load_failed", "load_failed", "predict_failed" -> true;
+            default -> false;
+        };
+    }
+
+    /* ==================== helpers ==================== */
+
+    private static ThreadPoolTaskScheduler createScheduler() {
+        var ts = new ThreadPoolTaskScheduler();
+        ts.setPoolSize(2);
+        ts.setThreadNamePrefix("ml-invest-");
+        ts.initialize();
+        return ts;
+    }
+
+    private void cancelJob(Long chatId) {
+        Optional.ofNullable(jobs.remove(chatId)).ifPresent(f -> f.cancel(false));
+    }
+
+    private BigDecimal positionSize(BigDecimal quota, Integer maxTrades) {
+        if (quota == null) return BigDecimal.ZERO;
+        if (maxTrades == null || maxTrades <= 0) return quota;
+        return quota.divide(new BigDecimal(maxTrades), java.math.MathContext.DECIMAL64);
+    }
+
+    private boolean hasOpenPosition(Long chatId, String symbol) {
+        return activeOrders.getOrDefault(chatId, List.of()).stream()
+                .anyMatch(o -> symbol.equalsIgnoreCase(o.getSymbol()) && !o.isClosed());
+    }
+
+    private boolean canOpenMore(Long chatId, int maxTrades) {
+        long open = activeOrders.getOrDefault(chatId, List.of()).stream()
+                .filter(o -> !o.isClosed())
+                .count();
+        return open < maxTrades;
+    }
+
+    private void placeMarket(Long chatId, String symbol, Order.Side side, BigDecimal amountQuote) {
+        try {
+            var o = orderService.placeMarket(chatId, symbol, side, amountQuote.doubleValue());
+            activeOrders.computeIfAbsent(chatId, k -> new ArrayList<>()).add(o);
+            log.info("[ML] OPEN {} {} amount={}", side, symbol, amountQuote);
+        } catch (Exception e) {
+            log.warn("[ML] placeMarket failed {} {}: {}", symbol, side, e.getMessage());
+        }
+    }
+
+    private void markClosed(Long chatId, String symbol) {
+        var list = activeOrders.getOrDefault(chatId, new ArrayList<>());
+        list.stream()
+                .filter(o -> symbol.equalsIgnoreCase(o.getSymbol()) && !o.isClosed())
+                .findFirst()
+                .ifPresent(o -> o.setClosed(true));
     }
 }

@@ -253,11 +253,12 @@ public class ExchangeOrderServiceImpl implements OrderService {
                     o.setFilled(true);
                     o.setClosed(true);
                     log.info("refresh: FILLED id={}, executed={}/{}", id, executed, origQty);
-                } else if ("CANCELED".equals(status) || "CANCELLED".equals(status)
-                           || "EXPIRED".equals(status) || "REJECTED".equals(status)) {
-                    o.setCancelled(true);
-                    log.info("refresh: {} id={} → помечаем отменённым", status, id);
                 } else {
+                    if ("CANCELED".equals(status) || "CANCELLED".equals(status)
+                        || "EXPIRED".equals(status) || "REJECTED".equals(status)) {
+                        o.setCancelled(true);
+                        log.info("refresh: {} id={} → помечаем отменённым", status, id);
+                    }
                     // NEW / PENDING_NEW / другие — оставляем как есть
                 }
             } catch (Exception e) {
