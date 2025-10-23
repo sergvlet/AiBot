@@ -5,9 +5,12 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Настройки стратегии Machine Learning Invest
+ * Настройки стратегии Machine Learning Invest.
+ * Хранит параметры ML-модели, торговые лимиты и выбранные пользователем пары.
  */
 @Entity
 @Table(name = "machine_learning_invest_strategy_settings")
@@ -15,88 +18,100 @@ import java.math.BigDecimal;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
+@Builder(toBuilder = true)
 public class MachineLearningInvestStrategySettings {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** Telegram chatId владельца стратегии */
+    @Column(nullable = false)
     private Long chatId;
 
-    /** Торговая пара (символ), если стратегия работает по одной монете */
+    /** Торговая пара по умолчанию (если стратегия работает с одной монетой) */
     @Builder.Default
+    @Column(nullable = false)
     private String symbol = "BTCUSDT";
 
-    /** Путь к модели машинного обучения (.pkl или .joblib) */
+    /** Путь к ML-модели (.pkl / .joblib) */
     @Builder.Default
+    @Column(nullable = false)
     private String modelPath = "python_ml/ml_invest/toy_model/model.pkl";
 
-    /** Размер капитала (квоты) для стратегии */
+    /** Квота капитала, выделенная под стратегию */
     @Builder.Default
+    @Column(precision = 19, scale = 8)
     private BigDecimal quota = BigDecimal.valueOf(100);
 
-    /** Максимальное количество сделок, открытых одновременно */
+    /** Максимум одновременных сделок */
     @Builder.Default
     private Integer maxTradesPerQuota = 5;
 
-    /** Размер обучающего окна (в днях) */
+    /** Окно обучения модели (в днях) */
     @Builder.Default
     private Integer trainingWindowDays = 30;
 
-    /** Размер универсума (топ-N монет по ликвидности) */
+    /** Размер универсума — сколько монет отбирать */
     @Builder.Default
     private Integer universeSize = 20;
 
-    /** Минимальный 24-часовой объём котировки (для фильтрации) */
+    /** Минимальный 24ч объём в котировке (для фильтрации ликвидности) */
     @Builder.Default
+    @Column(precision = 19, scale = 8)
     private BigDecimal min24hQuoteVolume = BigDecimal.valueOf(1_000_000);
 
-    /** Таймфрейм свечей (например, "1h", "4h") */
+    /** Таймфрейм, используемый в прогнозах */
     @Builder.Default
     private String timeframe = "1h";
 
-    /** Сколько монет брать для торговли после сортировки по вероятности BUY */
+    /** Количество монет, выбранных для торговли по вероятности BUY */
     @Builder.Default
     private Integer tradeTopN = 5;
 
-    /** Использовать ATR-базированный Take Profit / Stop Loss */
+    /** Использовать ATR-базированный TP/SL */
     @Builder.Default
     private Boolean useAtrTpSl = false;
 
-    /** Автоматическое переобучение при запуске */
+    /** Переобучать модель при каждом старте */
     @Builder.Default
     private Boolean autoRetrainOnStart = true;
 
-    /** Количество кэшируемых свечей (для бэктеста/обучения) */
+    /** Количество кэшируемых свечей */
     @Builder.Default
     private Integer cachedCandlesLimit = 500;
 
-    /** Порог вероятности BUY */
+    /** Порог BUY */
     @Builder.Default
+    @Column(precision = 5, scale = 2)
     private BigDecimal buyThreshold = BigDecimal.valueOf(0.55);
 
-    /** Порог вероятности SELL */
+    /** Порог SELL */
     @Builder.Default
+    @Column(precision = 5, scale = 2)
     private BigDecimal sellThreshold = BigDecimal.valueOf(0.55);
 
-    /** Take-Profit, % */
+    /** Take-Profit (%) */
     @Builder.Default
+    @Column(precision = 5, scale = 2)
     private BigDecimal takeProfitPct = BigDecimal.valueOf(2.0);
 
-    /** Stop-Loss, % */
+    /** Stop-Loss (%) */
     @Builder.Default
+    @Column(precision = 5, scale = 2)
     private BigDecimal stopLossPct = BigDecimal.valueOf(1.0);
 
-    /** Количество (QTY) для ордера — если используем фиксированный объём */
+    /** Количество (QTY) для ордера */
     @Builder.Default
+    @Column(precision = 19, scale = 8)
     private BigDecimal orderQty = BigDecimal.valueOf(0.001);
 
-    /** Сумма (в котировочной валюте), если работаем по quote-amount */
+    /** Сумма (в котировочной валюте), если используем quote-amount */
     @Builder.Default
+    @Column(precision = 19, scale = 8)
     private BigDecimal orderQuoteAmount = BigDecimal.valueOf(10);
 
-    /** Использовать ли котировочную сумму вместо количества */
+    /** Использовать ли котировочную сумму вместо QTY */
     @Builder.Default
     private boolean useQuoteAmount = true;
 
@@ -104,8 +119,36 @@ public class MachineLearningInvestStrategySettings {
     @Builder.Default
     private boolean active = false;
 
-    /** Тип стратегии — используется в Telegram-боте */
+    /** Тип стратегии (для унификации в Telegram-боте) */
     @Builder.Default
     @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 64)
     private StrategyType type = StrategyType.MACHINE_LEARNING_INVEST;
+
+    /** ✅ Список выбранных пользователем торговых пар */
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(
+            name = "ml_invest_selected_pairs",
+            joinColumns = @JoinColumn(name = "settings_id")
+    )
+    @Column(name = "symbol", nullable = false, length = 50)
+    @Builder.Default
+    private List<String> selectedPairs = new ArrayList<>();
+
+    /** Удобный метод добавления пары */
+    public void addPair(String symbol) {
+        if (selectedPairs == null) {
+            selectedPairs = new ArrayList<>();
+        }
+        if (!selectedPairs.contains(symbol)) {
+            selectedPairs.add(symbol);
+        }
+    }
+
+    /** Удаление пары */
+    public void removePair(String symbol) {
+        if (selectedPairs != null) {
+            selectedPairs.remove(symbol);
+        }
+    }
 }

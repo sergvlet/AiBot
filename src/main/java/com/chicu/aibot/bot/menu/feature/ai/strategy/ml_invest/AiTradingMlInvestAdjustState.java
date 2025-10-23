@@ -45,6 +45,7 @@ public class AiTradingMlInvestAdjustState implements MenuState {
             case "modelPath"          -> nullSafe(s.getModelPath());
             case "orderQty"           -> nullSafe(s.getOrderQty());
             case "orderQuoteAmount"   -> nullSafe(s.getOrderQuoteAmount());
+            case "maxTradesPerQuota"  -> String.valueOf(safeInt(s.getMaxTradesPerQuota()));
             case "volumeMode"         -> s.isUseQuoteAmount() ? "по сумме (Quote)" : "по количеству (Qty)";
             default                   -> "—";
         };
@@ -65,7 +66,6 @@ public class AiTradingMlInvestAdjustState implements MenuState {
                 .build();
     }
 
-    // Удобная обёртка
     public SendMessage render(Update update) { return render(extractChatId(update)); }
 
     @Override
@@ -134,15 +134,18 @@ public class AiTradingMlInvestAdjustState implements MenuState {
                 v = stepDecimal(v, data, new BigDecimal("0.001"), new BigDecimal("0.01"), new BigDecimal("0.1"));
                 if (v.signum() < 0) v = BigDecimal.ZERO;
                 s.setOrderQty(v);
-                // при желании можно автопереключать режим:
-                // s.setUseQuoteAmount(false);
             }
             case "orderQuoteAmount" -> {
                 BigDecimal v = s.getOrderQuoteAmount() == null ? BigDecimal.ZERO : s.getOrderQuoteAmount();
                 v = stepDecimal(v, data, new BigDecimal("1"), new BigDecimal("10"), new BigDecimal("100"));
                 if (v.signum() < 0) v = BigDecimal.ZERO;
                 s.setOrderQuoteAmount(v);
-                // s.setUseQuoteAmount(true);
+            }
+            case "maxTradesPerQuota" -> {
+                int v = safeInt(s.getMaxTradesPerQuota());
+                if ("dec".equals(data)) v = Math.max(1, v - 1);
+                if ("inc".equals(data)) v = Math.min(100, v + 1);
+                s.setMaxTradesPerQuota(v);
             }
             default -> { /* noop */ }
         }
@@ -170,7 +173,7 @@ public class AiTradingMlInvestAdjustState implements MenuState {
             case "buyThreshold", "sellThreshold" -> rows.add(row(btn("➖ 0.05", "dec"), btn("➕ 0.05", "inc")));
             case "tp_sl" -> {
                 rows.add(row(btn("TP ➖", "tp_dec"), btn("TP ➕", "tp_inc")));
-                rows.add(row(btn("SL ➖", "sl_dec"), btn("SL ➖", "sl_inc")));
+                rows.add(row(btn("SL ➖", "sl_dec"), btn("SL ➕", "sl_inc")));
             }
             case "modelPath" -> rows.add(row(btn("✏️ Ввести путь к модели", "model:ask")));
             case "orderQty" -> {
@@ -181,6 +184,7 @@ public class AiTradingMlInvestAdjustState implements MenuState {
                 rows.add(row(btn("➖ 1", "dec_small"), btn("➖ 10", "dec_mid"), btn("➖ 100", "dec_big")));
                 rows.add(row(btn("➕ 1", "inc_small"), btn("➕ 10", "inc_mid"), btn("➕ 100", "inc_big")));
             }
+            case "maxTradesPerQuota" -> rows.add(row(btn("➖ 1", "dec"), btn("➕ 1", "inc")));
             default -> { /* nothing */ }
         }
 
@@ -202,6 +206,7 @@ public class AiTradingMlInvestAdjustState implements MenuState {
         m.put("modelPath",          new FieldMeta("Модель", "Путь к ML-модели (.joblib/.onnx)", null));
         m.put("orderQty",           new FieldMeta("Фикс. объём (Qty)", "Количество базового актива на сделку", 0.001));
         m.put("orderQuoteAmount",   new FieldMeta("Сумма (Quote)", "Сумма в котируемой валюте; qty считается по цене", 1.0));
+        m.put("maxTradesPerQuota",  new FieldMeta("Макс. число сделок", "Количество сделок, которые могут быть открыты одновременно", 1.0));
         return m;
     }
 

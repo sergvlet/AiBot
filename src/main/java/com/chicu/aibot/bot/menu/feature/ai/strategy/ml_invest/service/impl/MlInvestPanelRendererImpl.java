@@ -40,6 +40,7 @@ public class MlInvestPanelRendererImpl implements MlInvestPanelRenderer {
     public static final String BTN_EDIT_VOLUME     = "ml_edit_volumeMode";
     public static final String BTN_EDIT_QTY        = "ml_edit_orderQty";
     public static final String BTN_EDIT_QUOTE      = "ml_edit_orderQuoteAmount";
+    public static final String BTN_EDIT_MAX_TRADES = "ml_edit_maxTradesPerQuota";
     public static final String BTN_HELP            = "ai_trading_ml_invest_help";
 
     private final MachineLearningInvestStrategySettingsService settingsService;
@@ -85,6 +86,7 @@ public class MlInvestPanelRendererImpl implements MlInvestPanelRenderer {
                 • TP: `%s%%` • SL: `%s%%`
                 • Модель: `%s`
                 %s
+                • Макс. сделок: `%d`
                 """).stripTrailing().formatted(
                 s.isActive() ? "🟢 *Запущена*" : "🔴 *Остановлена*",
                 symbol,
@@ -102,10 +104,10 @@ public class MlInvestPanelRendererImpl implements MlInvestPanelRenderer {
                 fmt(s.getTakeProfitPct()),
                 fmt(s.getStopLossPct()),
                 nvl(s.getModelPath()),
-                volumeModeLine
+                volumeModeLine,
+                safeI(s.getMaxTradesPerQuota())
         );
 
-        // ✅ экранируем Markdown-символы, включая точки
         text = TelegramText.escapeMarkdownV1(text);
 
         InlineKeyboardMarkup markup = AdaptiveKeyboard.markupFromGroups(List.of(
@@ -132,9 +134,13 @@ public class MlInvestPanelRendererImpl implements MlInvestPanelRenderer {
                         AdaptiveKeyboard.btn("Quote", BTN_EDIT_QUOTE)
                 ),
                 List.of(
+                        AdaptiveKeyboard.btn("📈 Макс. сделок", BTN_EDIT_MAX_TRADES)
+                ),
+                List.of(
                         AdaptiveKeyboard.btn(s.isActive() ? "🔴 Остановить стратегию" : "🟢 Запустить стратегию", BTN_TOGGLE_ACTIVE)
                 )
         ), 3);
+
         return SendMessage.builder()
                 .chatId(chatId.toString())
                 .text(text)

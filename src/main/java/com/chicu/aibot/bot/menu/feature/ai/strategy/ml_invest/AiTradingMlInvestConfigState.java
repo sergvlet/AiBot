@@ -68,6 +68,12 @@ public class AiTradingMlInvestConfigState implements MenuState {
             uiAutorefresh.disable(chatId, NAME);
             return "ai_trading";
         }
+        if (MlInvestPanelRendererImpl.BTN_EDIT_MAX_TRADES.equals(data)) {
+            uiAutorefresh.disable(chatId, NAME);
+            sessionService.setEditingField(chatId, "maxTradesPerQuota");
+            return AiTradingMlInvestAdjustState.NAME;
+        }
+
 
         if (MlInvestPanelRendererImpl.BTN_EDIT_SYMBOL.equals(data)) {
             uiAutorefresh.disable(chatId, NAME);
@@ -81,7 +87,6 @@ public class AiTradingMlInvestConfigState implements MenuState {
             return MlInvestPanelRendererImpl.BTN_HELP; // "ai_trading_ml_invest_help"
         }
 
-        // редактирование полей (включая volumeMode)
         if (data.startsWith("ml_edit_")) {
             uiAutorefresh.disable(chatId, NAME);
             String field = data.substring("ml_edit_".length());
